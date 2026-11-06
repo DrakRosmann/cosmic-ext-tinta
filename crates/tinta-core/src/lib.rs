@@ -15,6 +15,7 @@ pub mod outline;
 pub mod session;
 pub mod settings;
 pub mod snippet;
+pub mod structure;
 pub mod syntax;
 pub mod tasks;
 

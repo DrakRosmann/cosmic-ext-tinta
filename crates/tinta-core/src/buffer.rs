@@ -137,6 +137,14 @@ struct Transaction {
     prev_state: u64,
 }
 
+/// A change as LSP describes it: positions in the text just before it, in UTF-16 columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspChange {
+    pub start: crate::lsp::Pos,
+    pub end: crate::lsp::Pos,
+    pub text: String,
+}
+
 /// Something that changed in the text; other views and overlays translate themselves with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangeRec {
@@ -160,6 +168,11 @@ pub struct Document {
     pub disk_mtime: Option<SystemTime>,
     pub revision: u64,
     pub highlighter: Option<Highlighter>,
+    pub structure: Option<crate::structure::Structure>,
+    /// Keep a record of changes for a language server that takes them one at a time.
+    pub track_lsp: bool,
+    lsp_log: Vec<LspChange>,
+    lsp_overflow: bool,
     /// Display name for buffers with no file.
     pub scratch_name: String,
     undo: Vec<Transaction>,
@@ -201,6 +214,10 @@ impl Document {
             disk_mtime: None,
             revision: 0,
             highlighter: None,
+            structure: None,
+            track_lsp: false,
+            lsp_log: Vec::new(),
+            lsp_overflow: false,
             scratch_name: String::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -411,12 +428,42 @@ impl Document {
         self.break_coalescing = true;
     }
 
+    /// The changes since the last call, in order. `None` when there were too many to be worth it,
+    /// and the whole text should be sent instead.
+    pub fn take_lsp_changes(&mut self) -> Option<Vec<LspChange>> {
+        let overflow = std::mem::take(&mut self.lsp_overflow);
+        let list = std::mem::take(&mut self.lsp_log);
+        (!overflow).then_some(list)
+    }
+
+    /// Brings the syntax tree up to date with the text.
+    pub fn sync_structure(&mut self) {
+        let rev = self.revision;
+        if let Some(st) = &mut self.structure {
+            st.update(&self.rope, rev);
+        }
+    }
+
     /// Drains the record of what changed since the last call.
     pub fn take_log(&mut self) -> Vec<ChangeRec> {
         std::mem::take(&mut self.log)
     }
 
     fn raw_change(&mut self, at: usize, remove: usize, insert: &str) -> String {
+        if self.track_lsp {
+            // Past this many, sending the whole text is cheaper.
+            if self.lsp_log.len() < 512 {
+                let change = LspChange {
+                    start: crate::lsp::to_lsp(&self.rope, at),
+                    end: crate::lsp::to_lsp(&self.rope, at + remove),
+                    text: insert.to_string(),
+                };
+                self.lsp_log.push(change);
+            } else {
+                self.lsp_overflow = true;
+            }
+        }
+        let tree_edit = self.structure.as_ref().map(|_| crate::structure::EditStart::new(&self.rope, at, remove));
         let start_line = self.rope.char_to_line(at);
         let removed: String = self.rope.slice(at..at + remove).to_string();
         let removed_lines = removed.bytes().filter(|b| *b == b'\n').count();
@@ -437,6 +484,9 @@ impl Document {
         });
         if let Some(h) = &mut self.highlighter {
             h.on_change(start_line, removed_lines, inserted_lines);
+        }
+        if let (Some(st), Some(e)) = (&mut self.structure, tree_edit) {
+            st.edit(e.finish(&self.rope, insert.len()));
         }
         self.revision += 1;
         removed
@@ -713,6 +763,54 @@ mod tests {
         doc.save_to(&p).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"\xFF\xFEo\0i\0\n\0");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The record of changes, applied to a copy the way a language server would, has to give the
+    /// same text: through multi-cursor edits, undo, non-ASCII and characters over one UTF-16 unit.
+    #[test]
+    fn lsp_changes_replay_to_the_same_text() {
+        fn apply(shadow: &mut String, c: &LspChange) {
+            let rope = Rope::from_str(shadow);
+            let a = rope.char_to_byte(crate::lsp::from_lsp(&rope, c.start));
+            let b = rope.char_to_byte(crate::lsp::from_lsp(&rope, c.end));
+            shadow.replace_range(a..b, &c.text);
+        }
+        let start = "ação 😀 linha\n\tsegunda 日本\nfim\n";
+        let mut doc = Document::new(start);
+        doc.track_lsp = true;
+        let mut shadow = start.to_string();
+        let mut cur = Cursors::default();
+        let check = |doc: &mut Document, shadow: &mut String| {
+            for c in doc.take_lsp_changes().unwrap() {
+                apply(shadow, &c);
+            }
+            assert_eq!(*shadow, doc.rope.to_string());
+        };
+        doc.apply(vec![Edit::insert(7, "X😀"), Edit::new(0, 4, "é"), Edit::insert(14, "\nnova\n")], &mut cur, EditKind::Other, |_, _| {});
+        check(&mut doc, &mut shadow);
+        doc.apply(vec![Edit::delete(1, 6)], &mut cur, EditKind::Other, |_, _| {});
+        check(&mut doc, &mut shadow);
+        doc.undo(&mut cur);
+        doc.undo(&mut cur);
+        check(&mut doc, &mut shadow);
+        assert_eq!(shadow, start);
+        doc.redo(&mut cur);
+        check(&mut doc, &mut shadow);
+        doc.replace_all("outro texto\ncom 😀\n", &mut cur);
+        check(&mut doc, &mut shadow);
+    }
+
+    #[test]
+    fn too_many_lsp_changes_ask_for_the_whole_text() {
+        let mut doc = Document::new("");
+        doc.track_lsp = true;
+        let mut cur = Cursors::default();
+        for i in 0..600 {
+            doc.apply(vec![Edit::insert(i, "x")], &mut cur, EditKind::Other, |_, _| {});
+        }
+        assert!(doc.take_lsp_changes().is_none());
+        doc.apply(vec![Edit::insert(0, "y")], &mut cur, EditKind::Other, |_, _| {});
+        assert_eq!(doc.take_lsp_changes().unwrap().len(), 1);
     }
 
     #[test]

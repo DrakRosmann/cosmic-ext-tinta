@@ -136,6 +136,7 @@ impl App {
             C::AddCursorAbove => self.select_op(|d, c, m| cmds::add_cursor_vertical(d, c, m, false)),
             C::AddCursorBelow => self.select_op(|d, c, m| cmds::add_cursor_vertical(d, c, m, true)),
             C::ExpandSelection => {
+                self.sync_active_structure();
                 if let Some((t, e)) = self.active_mut() {
                     t.expand_stack.push(t.cursors.clone());
                     t.cursors.map(|s| cmds::expand_selection(&e.doc, s));
@@ -204,9 +205,15 @@ impl App {
             C::NextChange => self.change_step(true),
             C::PrevChange => self.change_step(false),
             C::RevertHunk => self.revert_hunk(),
-            C::Fold => self.fold_at_cursor(),
+            C::Fold => {
+                self.sync_active_structure();
+                self.fold_at_cursor();
+            }
             C::Unfold => self.unfold_at_cursor(),
-            C::FoldAll => self.fold_all(),
+            C::FoldAll => {
+                self.sync_active_structure();
+                self.fold_all();
+            }
             C::UnfoldAll => {
                 if let Some((t, _)) = self.active_mut() {
                     t.folds.clear();
@@ -527,6 +534,8 @@ impl App {
         let mut target = None;
         if display::is_foldable(&e.doc, line, tab) && !t.folds.is_folded(line) {
             target = Some(line);
+        } else if let Some(h) = display::enclosing_headers(&e.doc, line, tab, 1).pop().filter(|_| e.doc.structure.as_ref().is_some_and(|s| s.has_tree())) {
+            target = Some(h);
         } else {
             let base = display::line_indent_vcols(&e.doc, line, tab);
             let mut l = line;

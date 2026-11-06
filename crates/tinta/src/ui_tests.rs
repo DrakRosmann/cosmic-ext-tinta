@@ -777,6 +777,36 @@ fn large_file_stays_responsive() {
     measure(&mut ui, "typing with wrap", 5, &mut |ui| ui.typed("z"));
 }
 
+#[test]
+fn folds_outline_and_breadcrumbs_come_from_the_syntax_tree() {
+    let dir = temp_dir("tree-sitter");
+    let p = dir.join("a.rs");
+    // Indentation here is deliberately no help.
+    std::fs::write(&p, "fn um() {\nlet a = 1;\nlet b = 2;\n}\nstruct S {\nx: u8,\ny: u8,\n}\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.app.refresh_symbols();
+    ui.cmd(Command::FoldAll);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(t.folds.ranges, vec![(0, 2), (4, 6)]);
+    let names: Vec<_> = e.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["um", "S"]);
+    ui.cmd(Command::UnfoldAll);
+    ui.app.jump_to(5, 0);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(crate::ui::sidebar::current_symbols(e, t), vec!["S"]);
+    ui.app.jump_to(3, 0);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(crate::ui::sidebar::current_symbols(e, t), vec!["um"]);
+    // Typing keeps it current.
+    ui.app.jump_to(8, 0);
+    ui.typed("fn dois() {}");
+    ui.app.refresh_symbols();
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    ui.app.refresh_symbols();
+    let names: Vec<_> = ui.app.active().unwrap().1.symbols.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, vec!["um", "S", "dois"]);
+}
+
 /// Menus are surfaces of their own, and closing one asks the same question as closing the window.
 #[test]
 fn a_build_task_runs_and_its_errors_mark_the_file() {

@@ -809,7 +809,7 @@ impl App {
         self.dark = dark;
         self.syntax_theme = tinta_core::syntax::theme_by_name(&name, dark);
         for e in self.docs.values_mut() {
-            docs::attach_highlighter(&mut e.doc, self.syntax_theme.clone());
+            docs::attach_language(&mut e.doc, self.syntax_theme.clone());
         }
     }
 

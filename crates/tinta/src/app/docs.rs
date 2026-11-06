@@ -15,9 +15,16 @@ use tinta_core::settings::AutoSave;
 use tinta_core::syntax::Highlighter;
 use tinta_core::{Cursors, Document, Selection, commands, display, git as core_git};
 
-pub fn attach_highlighter(doc: &mut Document, theme: Arc<syntect::highlighting::Theme>) {
+/// Sets up what depends on the language: colours, and the syntax tree where there's a parser.
+pub fn attach_language(doc: &mut Document, theme: Arc<syntect::highlighting::Theme>) {
     doc.highlighter = Highlighter::new(&doc.language.name, theme);
+    let name = doc.language.name.clone();
+    doc.structure = (doc.len_chars() <= tinta_core::structure::MAX_CHARS).then(|| tinta_core::structure::Structure::new(&name)).flatten();
+    doc.sync_structure();
 }
+
+/// Up to this size the syntax tree follows every key. Past it, it waits for a pause.
+const SYNC_ON_EVERY_EDIT: usize = 200_000;
 
 fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
@@ -34,7 +41,7 @@ impl App {
     }
 
     fn make_entry(&mut self, mut doc: Document) -> DocId {
-        attach_highlighter(&mut doc, self.syntax_theme.clone());
+        attach_language(&mut doc, self.syntax_theme.clone());
         let id = self.new_id();
         let key = session::backup_key(doc.path.as_deref(), id);
         let entry = DocEntry::new(doc, key);
@@ -280,7 +287,7 @@ impl App {
             e.doc.language = tinta_core::language::detect(&path, e.doc.rope.line(0).as_str().unwrap_or(""));
         }
         if let Some(e) = self.docs.get_mut(&doc_id) {
-            attach_highlighter(&mut e.doc, self.syntax_theme.clone());
+            attach_language(&mut e.doc, self.syntax_theme.clone());
         }
         let t = self.finish_save(id, path.clone());
         let t2 = self.lsp_open_doc(doc_id);
@@ -770,6 +777,11 @@ impl App {
             }
             any_change = true;
             self.apply_change_log(id, &log);
+            if let Some(e) = self.docs.get_mut(&id)
+                && e.doc.len_chars() <= SYNC_ON_EVERY_EDIT
+            {
+                e.doc.sync_structure();
+            }
         }
         let (visible, wrap_changed) = self.sync_visible_tabs();
         let _ = wrap_changed;
@@ -918,6 +930,7 @@ impl App {
                 && e.symbols_rev != Some(e.doc.revision)
                 && e.last_edit.is_none_or(|t| t.elapsed() > Duration::from_millis(400))
             {
+                e.doc.sync_structure();
                 e.symbols = if e.doc.len_lines() < 100_000 { tinta_core::outline::symbols(&e.doc) } else { Vec::new() };
                 e.symbols_rev = Some(e.doc.revision);
             }
@@ -1022,6 +1035,13 @@ impl App {
         e.doc.break_undo();
         self.center_active();
         self.after_caret_move();
+    }
+
+    /// Before anything that acts on folds: on big files the tree may be waiting for a pause.
+    pub fn sync_active_structure(&mut self) {
+        if let Some((_, e)) = self.active_mut() {
+            e.doc.sync_structure();
+        }
     }
 
     pub fn fold_line_range(doc: &Document, line: usize) -> Option<usize> {

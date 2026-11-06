@@ -1306,6 +1306,13 @@ fn matching_bracket_exact(doc: &Document, p: usize) -> Option<(usize, usize)> {
 /// Grows word → inside brackets → with brackets → lines → everything.
 pub fn expand_selection(doc: &Document, s: Selection) -> Selection {
     let (a, b) = (s.start(), s.end());
+    // With a syntax tree, the next node out. Otherwise, brackets and lines.
+    if let Some(st) = doc.structure.as_ref().filter(|st| st.is_current(doc.revision)) {
+        let (ba, bb) = (doc.rope.char_to_byte(a), doc.rope.char_to_byte(b));
+        if let Some((na, nb)) = st.expand(ba, bb) {
+            return Selection::new(doc.rope.byte_to_char(na), doc.rope.byte_to_char(nb));
+        }
+    }
     if a == b {
         let (wa, wb) = word_or_run_at(doc, a);
         if wa != wb {

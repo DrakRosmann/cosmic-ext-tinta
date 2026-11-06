@@ -248,6 +248,7 @@ impl App {
                 Task::none()
             }
             EditorEvent::FoldToggle { row } => {
+                self.sync_active_structure();
                 self.toggle_fold_at_row(id, row);
                 Task::none()
             }
