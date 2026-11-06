@@ -15,7 +15,7 @@ pub use explorer::{Explorer, RowAction};
 pub use git::{GitMsg, GitPanel};
 pub use keys::KeyEv;
 pub use lsp::{Completion, HoverPopup, SignaturePopup};
-pub use editing::{FIND_INPUT, REPLACE_INPUT};
+pub use editing::{FIND_INPUT, MAX_SHOWN_MATCHES, REPLACE_INPUT};
 pub use explorer::ExplorerMsg;
 pub use palette::{PAction, PItem, PaletteMode, PaletteMsg, PaletteState, PALETTE_INPUT};
 pub use search::{SearchMsg, SearchPanel, SearchRow, SEARCH_INPUT};
@@ -211,6 +211,7 @@ pub enum Message {
     CloseRequested,
     WindowFocused(bool),
     Dropped(Vec<PathBuf>),
+    RemoteOpen(Vec<crate::instance::Target>),
     Script(script::Step),
     ThemeChanged,
 }
@@ -738,6 +739,23 @@ impl App {
                     } else {
                         tasks.push(self.open_path(&p));
                     }
+                }
+                Task::batch(tasks)
+            }
+            Message::RemoteOpen(targets) => {
+                let mut tasks = Vec::new();
+                for (path, at) in targets {
+                    if path.is_dir() {
+                        tasks.push(self.open_folder(path));
+                    } else {
+                        tasks.push(self.open_path(&path));
+                        if let Some((l, c)) = at {
+                            self.jump_to(l, c);
+                        }
+                    }
+                }
+                if let Some(id) = self.core.main_window_id() {
+                    tasks.push(window::gain_focus(id));
                 }
                 Task::batch(tasks)
             }

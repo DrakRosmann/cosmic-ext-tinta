@@ -176,7 +176,7 @@ impl App {
                 Task::none()
             }
             Step::Quit => {
-                save_quit_state(self);
+                self.persist_on_quit();
                 cosmic::iced::exit()
             }
         }
@@ -226,8 +226,4 @@ impl App {
             "lsp": self.lsp.keys().collect::<Vec<_>>(),
         })
     }
-}
-
-fn save_quit_state(app: &mut App) {
-    super::save_session(app);
 }

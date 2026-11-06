@@ -343,7 +343,8 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     } else if total == 0 {
         tr("No results").to_string()
     } else {
-        format!("{} {} {total}", f.current.map_or(0, |c| c + 1), tr("of"))
+        let plus = if total >= crate::app::MAX_SHOWN_MATCHES { "+" } else { "" };
+        format!("{} {} {total}{plus}", f.current.map_or(0, |c| c + 1), tr("of"))
     };
     let input = widget::text_input(tr("Find"), f.query.pattern.as_str())
         .id(widget::Id::new(FIND_INPUT))

@@ -3,6 +3,7 @@
 mod app;
 mod bus;
 mod i18n;
+mod instance;
 mod state;
 #[cfg(test)]
 mod ui_tests;
@@ -33,6 +34,20 @@ fn main() -> cosmic::iced::Result {
         }
     }
 
+    // `--new-session` runs apart from the instance, and leaves its session and backups alone.
+    let mut socket = None;
+    if !new_session {
+        let path = instance::socket_path();
+        match instance::claim(&path, &targets) {
+            instance::Claim::Forwarded => return Ok(()),
+            instance::Claim::Primary(listener, path) => {
+                instance::serve_app(listener);
+                socket = Some(path);
+            }
+            instance::Claim::Alone => {}
+        }
+    }
+
     let (settings, _) = tinta_core::settings::Settings::load();
     let theme = match settings.ui_theme {
         tinta_core::settings::AppTheme::System => cosmic::theme::system_preference(),
@@ -44,14 +59,18 @@ fn main() -> cosmic::iced::Result {
         .size_limits(Limits::NONE.min_width(480.0).min_height(320.0))
         .theme(theme)
         .exit_on_close(false);
-    cosmic::app::run::<App>(window, Flags { targets, new_session })
+    let result = cosmic::app::run::<App>(window, Flags { targets, new_session });
+    if let Some(p) = socket {
+        let _ = std::fs::remove_file(p);
+    }
+    result
 }
 
 const USAGE: &str = "tinta: code editor for the COSMIC desktop
 
 Usage: cosmic-ext-tinta [--new-session] [FILE[:LINE[:COL]] | FOLDER]...
 
-  --new-session   ignore the saved session
+  --new-session   a separate editor: no saved session, no backups, doesn't join the running one
   --version       print the version
 ";
 

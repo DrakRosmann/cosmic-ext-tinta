@@ -186,6 +186,7 @@ pub fn tr(en: &'static str) -> &'static str {
         "Nothing to rename here" => "Nada para renomear aqui",
         "Waiting for the next key…" => "Aguardando a próxima tecla…",
         "replacements" => "substituições",
+        "files failed, see Output" => "arquivos falharam, veja a Saída",
         "Keyboard Shortcuts" => "Atalhos de teclado",
         "matches in" => "resultados em",
         "files" => "arquivos",

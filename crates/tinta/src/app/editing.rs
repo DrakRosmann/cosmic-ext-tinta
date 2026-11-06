@@ -10,6 +10,8 @@ use tinta_core::{Cursors, Selection, find};
 
 pub const FIND_INPUT: &str = "find-input";
 pub const REPLACE_INPUT: &str = "replace-input";
+/// How many matches get highlighted. Replacing isn't limited by this.
+pub const MAX_SHOWN_MATCHES: usize = 100_000;
 
 impl App {
     pub fn edit_opts(&self) -> EditOpts {
@@ -500,7 +502,7 @@ impl App {
         }
         match q.compile() {
             Ok(re) => {
-                let mut m = find::find_all(&e.doc, &re, 100_000);
+                let mut m = find::find_all(&e.doc, &re, MAX_SHOWN_MATCHES);
                 if let Some(ranges) = &sel_ranges {
                     m.retain(|x| ranges.iter().any(|r| r.0 <= x.0 && x.1 <= r.1));
                 }
@@ -618,13 +620,18 @@ impl App {
         let q = self.find.query.clone();
         let Ok(re) = q.compile() else { return Task::none() };
         let replacement = self.find.replacement.clone();
+        let ranges = self.find.in_selection.clone();
         let Some((_, e)) = self.active() else { return Task::none() };
-        let n = e.matches.len();
+        // The highlighted list may be cut short; this one never is.
+        let mut all = find::find_all(&e.doc, &re, usize::MAX);
+        if let Some(r) = &ranges {
+            all.retain(|x| r.iter().any(|s| s.0 <= x.0 && x.1 <= s.1));
+        }
+        let n = all.len();
         if n == 0 {
             return Task::none();
         }
-        let edits: Vec<tinta_core::Edit> = e
-            .matches
+        let edits: Vec<tinta_core::Edit> = all
             .iter()
             .map(|&(a, b)| tinta_core::Edit::new(a, b, find::expand(&re, &q, &e.doc.slice_string(a, b), &replacement)))
             .collect();

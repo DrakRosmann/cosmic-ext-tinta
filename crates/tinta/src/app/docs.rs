@@ -432,7 +432,8 @@ impl App {
 
     pub fn request_quit(&mut self) -> Task<Message> {
         let dirty = self.docs.values().any(|e| e.doc.is_dirty() && !e.is_read_only_view);
-        if dirty && !self.settings.hot_exit {
+        // A separate instance keeps no backups, so its unsaved work has to be asked about.
+        if dirty && (!self.settings.hot_exit || self.new_session) {
             self.dialog = Some(DialogState::QuitUnsaved);
             return Task::none();
         }
@@ -440,9 +441,16 @@ impl App {
     }
 
     pub fn quit_now(&mut self) -> Task<Message> {
-        self.write_backups(true);
-        super::save_session(self);
+        self.persist_on_quit();
         cosmic::iced::exit()
+    }
+
+    /// Only the main instance owns the session and the backups.
+    pub fn persist_on_quit(&mut self) {
+        if !self.new_session {
+            self.write_backups(true);
+            super::save_session(self);
+        }
     }
 
     // Session ------------------------------------------------------------------------------
@@ -487,7 +495,6 @@ impl App {
     pub fn restore(&mut self, targets: Vec<(PathBuf, Option<(usize, usize)>)>) -> Task<Message> {
         let mut tasks = Vec::new();
         let saved = (!self.new_session && self.settings.restore_session).then(Session::load).flatten();
-        let has_targets = !targets.is_empty();
         if let Some(s) = &saved {
             self.recent_files = s.recent_files.clone();
             self.recent_folders = s.recent_folders.clone();
@@ -498,7 +505,8 @@ impl App {
                 self.panel_h = s.panel_height;
             }
         }
-        if let Some(s) = saved.filter(|_| !has_targets) {
+        // Files on the command line open on top: skipping the session would lose its unsaved work.
+        if let Some(s) = saved {
             if let Some(f) = s.folder.clone().filter(|f| f.is_dir()) {
                 tasks.push(self.open_folder(f));
                 for p in &s.expanded {
@@ -940,8 +948,10 @@ impl App {
         // Hot exit copies and the session file.
         if self.session_dirty.is_some_and(|t| t.elapsed() > Duration::from_secs(3)) {
             self.session_dirty = None;
-            self.write_backups(false);
-            super::save_session(self);
+            if !self.new_session {
+                self.write_backups(false);
+                super::save_session(self);
+            }
         }
         // Hand-edited settings, picked up without a restart.
         let m = super::file_mtime(&tinta_core::settings::settings_path());

@@ -586,6 +586,79 @@ fn find_highlights_and_replace_all_works() {
     assert_eq!(ui.text(), SOURCE);
 }
 
+/// More matches than get highlighted: all of them still change.
+#[test]
+fn replace_all_goes_past_the_highlight_limit() {
+    let dir = temp_dir("limit");
+    let p = dir.join("many.txt");
+    let n = crate::app::MAX_SHOWN_MATCHES + 500;
+    std::fs::write(&p, "x\n".repeat(n)).unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.cmd(Command::Find);
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::Query("x".into())));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), crate::app::MAX_SHOWN_MATCHES);
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::Replacement("y".into())));
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::ReplaceAll));
+    ui.frame();
+    assert_eq!(ui.text().matches('y').count(), n);
+    assert_eq!(ui.text().matches('x').count(), 0);
+}
+
+/// Replacing in the folder used to act on the list on screen, which stops at a limit.
+#[test]
+fn replace_in_files_reaches_files_past_the_list_limit() {
+    let dir = temp_dir("limit2");
+    // One file fills the list; the next, alphabetically or not, would be left out of it.
+    std::fs::write(dir.join("a.txt"), "x\n".repeat(60_000)).unwrap();
+    std::fs::write(dir.join("b.txt"), "x\n").unwrap();
+    std::fs::write(dir.join("c.txt"), "x\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::Query("x".into())));
+    wait_for(&mut ui, |a| !a.search.running);
+    assert!(ui.app.search.truncated, "the list should say it stopped early");
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::Replacement("y".into())));
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::ReplaceAll));
+    wait_for(&mut ui, |a| !a.search.replacing);
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        assert!(!std::fs::read_to_string(dir.join(f)).unwrap().contains('x'), "{f}");
+    }
+}
+
+#[test]
+fn a_separate_instance_leaves_session_and_backups_alone() {
+    let (mut ui, _) = Ui::with_file();
+    assert!(ui.app.new_session);
+    tinta_core::session::write_backup("of-the-main-instance", "texto").unwrap();
+    ui.typed("x");
+    ui.app.persist_on_quit();
+    assert_eq!(tinta_core::session::read_backup("of-the-main-instance").as_deref(), Some("texto"));
+    tinta_core::session::remove_backup("of-the-main-instance");
+    // And since nothing is kept for it, quitting with unsaved work asks.
+    let _ = ui.app.request_quit();
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::QuitUnsaved)));
+}
+
+#[test]
+fn opening_a_file_does_not_lose_the_session_it_would_have_restored() {
+    let (mut ui, p) = Ui::with_file();
+    ui.typed("rascunho ");
+    ui.app.write_backups(false);
+    crate::app::save_session(&ui.app);
+    let text = ui.text();
+    drop(ui);
+    let other = temp_dir("other").join("b.txt");
+    std::fs::write(&other, "b").unwrap();
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let flags = Flags { targets: vec![(other, None)], new_session: false };
+    let (app, _) = App::init(Core::default(), flags);
+    drop(guard);
+    assert_eq!(app.active().unwrap().1.doc.file_name(), "b.txt", "the requested file is in front");
+    let id = app.doc_by_path(&p).expect("the old tab came back");
+    assert_eq!(app.docs[&id].doc.rope.to_string(), text);
+    assert!(app.docs[&id].doc.is_dirty());
+}
+
 #[test]
 fn word_wrap_keeps_clicks_on_the_right_cell() {
     let dir = temp_dir("wrap");

@@ -226,7 +226,8 @@ fn search_view(app: &App) -> Element<'_, Message> {
     } else if s.total == 0 {
         tr("No results").to_string()
     } else {
-        format!("{} {} {} {}", s.total, tr("matches in"), s.results.len(), tr("files"))
+        let plus = if s.truncated { "+" } else { "" };
+        format!("{}{plus} {} {} {}", s.total, tr("matches in"), s.results.len(), tr("files"))
     };
     form = form.push(text(summary).size(12).class(theme::Text::Color(dim)));
 
