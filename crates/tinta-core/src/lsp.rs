@@ -1034,7 +1034,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.c");
-        let src = "int soma(int a, int b) { return a + b; }\nint main(void) {\n  return soma(1, 2) + nada;\n}\n";
+        // The error stays on its own line: older clangd drops a C expression with an error in it
+        // from its tree, and then has nothing to say about the rest of that expression.
+        let src = "int soma(int a, int b) { return a + b; }\nint main(void) {\n  int e = nada;\n  return soma(1, 2) + e;\n}\n";
         std::fs::write(&file, src).unwrap();
         let doc = Document::open(&file, crate::buffer::Indent { spaces: true, width: 4 }).unwrap();
         let (sink, rx) = collect();
@@ -1050,7 +1052,7 @@ mod tests {
         assert!(items[0].message.contains("nada"), "{}", items[0].message);
         assert_eq!(items[0].severity, Severity::Error);
 
-        let call = doc.pos(2, 9);
+        let call = doc.pos(3, 9);
         let id = c.hover(&file, &doc.rope, call);
         let Event::Reply { reply, .. } = wait(&rx, |e| matches!(e, Event::Reply { id: i, .. } if *i == id)) else { panic!() };
         let Reply::Hover(text) = reply else { panic!("{reply:?}") };
@@ -1061,7 +1063,7 @@ mod tests {
         let Reply::Locations(l) = reply else { panic!("{reply:?}") };
         assert_eq!(l[0].range.start.line, 0);
 
-        let id = c.completion(&file, &doc.rope, doc.pos(2, 11), None);
+        let id = c.completion(&file, &doc.rope, doc.pos(3, 11), None);
         let Event::Reply { reply, .. } = wait(&rx, |e| matches!(e, Event::Reply { id: i, .. } if *i == id)) else { panic!() };
         let Reply::Completion { items, .. } = reply else { panic!("{reply:?}") };
         assert!(items.iter().any(|i| i.label.contains("soma")), "{items:?}");
