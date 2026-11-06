@@ -197,7 +197,7 @@ pub fn tr(en: &'static str) -> &'static str {
         "Pushed" => "Enviado",
         "Pulled" => "Recebido",
         "A code editor for the COSMIC desktop, written in Rust." => "Um editor de código para o desktop COSMIC, escrito em Rust.",
-        "Reference" => "Referência",
+        "Configuration Files" => "Arquivos de configuração",
         "Terminal exited" => "Terminal encerrado",
         "Undo" => "Desfazer",
         "Redo" => "Refazer",

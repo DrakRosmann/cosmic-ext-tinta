@@ -75,7 +75,8 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Sash<'_, Message> {
                     shell.capture_event();
                 }
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            // The pointer is grabbed during a drag: entering means the release was lost.
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left) | mouse::Event::CursorEntered) => {
                 state.drag_from = None;
             }
             _ => {}

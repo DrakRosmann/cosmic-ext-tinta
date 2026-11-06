@@ -801,6 +801,14 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for EditorView<'a
                     }
                 }
             }
+            // During a real drag the pointer is grabbed, and never enters or leaves. If it does,
+            // the release went elsewhere (a popup closing took it), and the drag is over.
+            Event::Mouse(mouse::Event::CursorEntered | mouse::Event::CursorLeft) => {
+                if state.drag != DragKind::None {
+                    state.drag = DragKind::None;
+                    shell.publish((self.on_event)(EditorEvent::Release));
+                }
+            }
             Event::Mouse(mouse::Event::ButtonReleased(_)) => {
                 if state.drag != DragKind::None {
                     state.drag = DragKind::None;

@@ -208,8 +208,7 @@ fn group_view(app: &App, g: usize) -> Element<'_, Message> {
         on_event: Box::new(move |ev| Message::Editor(tab_id, ev)),
     }
     .into();
-    let editor: Element<'_, Message> =
-        cosmic::widget::context_menu(editor, Some(super::menu::editor_menu(app))).into();
+    let editor = super::menu::context(app, editor, super::menu::editor_menu(app));
 
     let mut layers = vec![editor];
     if active_group {

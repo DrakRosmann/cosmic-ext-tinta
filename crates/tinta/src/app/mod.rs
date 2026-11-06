@@ -166,6 +166,7 @@ pub enum BoolSetting {
 #[derive(Debug, Clone)]
 pub enum Message {
     Noop,
+    Surface(cosmic::surface::Action),
     Key(KeyEv),
     Modifiers(keyboard::Modifiers),
     InputFocus(bool),
@@ -424,8 +425,9 @@ impl Application for App {
         ui::popups::dialog(self)
     }
 
-    fn on_close_requested(&self, _id: window::Id) -> Option<Message> {
-        Some(Message::CloseRequested)
+    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        // Menus are popup surfaces, and this is called when they close too.
+        (self.core.main_window_id() == Some(id)).then_some(Message::CloseRequested)
     }
 
     fn on_context_drawer(&mut self) -> Task<Message> {
@@ -554,6 +556,7 @@ impl App {
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Noop => Task::none(),
+            Message::Surface(a) => cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(a))),
             Message::Key(ev) => self.on_key(ev),
             Message::Modifiers(m) => {
                 self.modifiers = m;

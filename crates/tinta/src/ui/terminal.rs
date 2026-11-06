@@ -427,7 +427,7 @@ impl<'a, Msg2: Clone + 'a> Widget<Msg2, Theme, Renderer> for TermView<'a, Msg2> 
                 }
                 shell.request_redraw();
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left) | mouse::Event::CursorEntered) => {
                 state.selecting = false;
                 let mut term = self.session.term.lock();
                 if term.selection.as_ref().is_some_and(|s| s.is_empty()) {

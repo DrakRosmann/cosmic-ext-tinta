@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tinta-core", "crates/tinta", "crates/tinta-vkbd"]
+members = ["crates/tinta-core", "crates/tinta", "crates/tinta-vkbd", "crates/tinta-xptr"]
 default-members = ["crates/tinta-core", "crates/tinta"]
 resolver = "3"
 

@@ -256,6 +256,22 @@ fn dragging_selects() {
     assert_eq!(ui.selection_text(), "alpha = 1;\n    let");
 }
 
+/// The click that closes a popup reaches the text, but its release goes to the popup. Found with
+/// a real pointer: the drag never ended, and moving the mouse went on selecting.
+#[test]
+fn a_lost_release_does_not_leave_a_drag_running() {
+    let (mut ui, _) = Ui::with_file();
+    let a = ui.cell(1, 8);
+    ui.move_to(a);
+    ui.press(mouse::Button::Left);
+    // No release: the pointer comes back to the window as the popup goes away.
+    ui.send(vec![Event::Mouse(mouse::Event::CursorEntered)]);
+    let b = ui.cell(4, 3);
+    ui.move_to(b);
+    assert_eq!(ui.selection_text(), "");
+    assert_eq!(ui.head(), (1, 8));
+}
+
 #[test]
 fn shift_click_extends_and_alt_click_adds_a_cursor() {
     let (mut ui, _) = Ui::with_file();
@@ -434,7 +450,8 @@ fn palette_filters_and_runs_a_clicked_command() {
     ui.cmd(Command::CommandPalette);
     assert!(ui.app.palette.is_some());
     assert_eq!(ui.app.focus, Focus::Input);
-    let _ = ui.app.update(Message::Palette(crate::app::PaletteMsg::Input("quebra".into())));
+    let title = Command::ToggleWordWrap.title(ui.app.pt()).to_string();
+    let _ = ui.app.update(Message::Palette(crate::app::PaletteMsg::Input(title)));
     ui.frame();
     let items: Vec<String> = ui.app.palette.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
     assert!(!items.is_empty());
@@ -758,4 +775,33 @@ fn large_file_stays_responsive() {
     ui.cmd(Command::ToggleWordWrap);
     eprintln!("turn on word wrap: {:?}", t.elapsed());
     measure(&mut ui, "typing with wrap", 5, &mut |ui| ui.typed("z"));
+}
+
+/// Menus are surfaces of their own, and closing one asks the same question as closing the window.
+#[test]
+fn closing_a_menu_popup_does_not_quit() {
+    let (ui, _) = Ui::with_file();
+    assert!(ui.app.on_close_requested(window::Id::unique()).is_none());
+    let main = ui.app.core.main_window_id();
+    if let Some(id) = main {
+        assert!(ui.app.on_close_requested(id).is_some());
+    }
+}
+
+#[test]
+fn menu_labels_are_really_drawn() {
+    let (ui, _) = Ui::with_file();
+    let el: Element<'_, Message> = crate::ui::menu::menu_bar(&ui.app);
+    let mut r = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
+    let mut bar = UserInterface::build(el, Size::new(1000.0, 48.0), user_interface::Cache::new(), &mut r);
+    let mut msgs = Vec::new();
+    let mut clip = clipboard::Null;
+    let cursor = mouse::Cursor::Available(Point::new(900.0, 40.0));
+    let _ = bar.update(&[Event::Window(window::Event::RedrawRequested(Instant::now()))], cursor, &mut r, &mut clip, &mut msgs);
+    let style = cosmic::iced::advanced::renderer::Style { icon_color: cosmic::iced::Color::WHITE, text_color: cosmic::iced::Color::WHITE, scale_factor: 1.0 };
+    bar.draw(&mut r, &ui.theme, &style, cursor);
+    drop(bar);
+    let Renderer::Secondary(sk) = &mut r else { panic!() };
+    let texts: Vec<String> = sk.layers().iter().flat_map(|l| l.text.iter().map(|t| format!("{t:?}").chars().take(160).collect::<String>())).collect();
+    assert_eq!(texts.len(), 9, "{texts:?}");
 }

@@ -174,6 +174,7 @@ O projeto é dividido para que quase tudo possa ser testado sem abrir janela:
   (abas, menus, paleta, configurações, diálogos) são os widgets do próprio COSMIC.
 - **`crates/tinta-vkbd`**: digita em um compositor pelo protocolo de teclado virtual do Wayland,
   para os testes de ponta a ponta.
+- **`crates/tinta-xptr`**: ponteiro real e capturas da tela real, para os mesmos testes.
 
 ## Testes
 
@@ -202,6 +203,11 @@ tests/e2e/run.sh /tmp/passos.txt
 ```
 
 Os passos estão descritos em [`script.rs`](crates/tinta/src/app/script.rs).
+
+`tests/e2e/pointer.sh` faz o mesmo com um **ponteiro de verdade**: o compositor roda dentro de um
+Xwayland próprio, e o `tinta-xptr` move, clica e captura os pixels da tela, sem mexer no cursor do
+desktop. Foi assim que apareceram bugs que nenhum outro teste pegava, como clicar num item de menu
+fechar o aplicativo.
 
 ## Licença
 

@@ -163,7 +163,7 @@ fn explorer_view(app: &App) -> Element<'_, Message> {
             .height(Length::Fixed(ROW_H))
             .width(Length::Fill)
             .on_press(Message::Explorer(ExplorerMsg::Click(i)));
-        col = col.push(widget::context_menu(b, Some(row_menu(i, r.is_dir))));
+        col = col.push(super::menu::context(app, b, row_menu(i, r.is_dir)));
     }
     col = col.push(widget::Space::new().height(Length::Fixed((total - last) as f32 * ROW_H)));
     column::with_children(vec![
