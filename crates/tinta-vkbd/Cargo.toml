@@ -1,0 +1,13 @@
+[package]
+name = "tinta-vkbd"
+description = "Types into a Wayland compositor through zwp_virtual_keyboard_v1, for end-to-end tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+xkbcommon = "0.8"
+rustix = { version = "1", features = ["fs"] }

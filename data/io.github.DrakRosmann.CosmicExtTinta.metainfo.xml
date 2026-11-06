@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.DrakRosmann.CosmicExtTinta</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="io.github.drakrosmann">
+    <name>DrakRosmann</name>
+  </developer>
+  <name>Tinta</name>
+  <summary>A code editor for the COSMIC desktop</summary>
+  <summary xml:lang="pt-BR">Um editor de código para o desktop COSMIC</summary>
+  <description>
+    <p>A fast code editor written in Rust, in the style of the COSMIC™ desktop, with the features you would expect from Visual Studio Code and Sublime Text.</p>
+    <ul>
+      <li>Syntax highlighting for 220 grammars, with 14 color themes</li>
+      <li>Multiple cursors, column selection, code folding, minimap, sticky scroll</li>
+      <li>Language servers: completion, hover, go to definition, rename, formatting, quick fixes</li>
+      <li>Find and replace with regular expressions, in the file or across a folder</li>
+      <li>Git: changes in the gutter, staging, commits, push and pull, blame</li>
+      <li>Command palette, quick open, splits, an integrated terminal, Markdown preview</li>
+    </ul>
+  </description>
+  <url type="homepage">https://github.com/DrakRosmann/cosmic-ext-tinta</url>
+  <url type="bugtracker">https://github.com/DrakRosmann/cosmic-ext-tinta/issues</url>
+  <url type="vcs-browser">https://github.com/DrakRosmann/cosmic-ext-tinta</url>
+  <icon type="stock">io.github.DrakRosmann.CosmicExtTinta</icon>
+  <launchable type="desktop-id">io.github.DrakRosmann.CosmicExtTinta.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/DrakRosmann/cosmic-ext-tinta/main/assets/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.1.0" date="2026-11-06"/>
+  </releases>
+</component>

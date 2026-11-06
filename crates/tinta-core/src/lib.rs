@@ -1,0 +1,22 @@
+//! Text engine of the Tinta editor. Nothing in here knows about windows: every
+//! feature can be exercised from a unit test.
+
+pub mod buffer;
+pub mod commands;
+pub mod cursor;
+pub mod display;
+pub mod find;
+pub mod fuzzy;
+pub mod git;
+pub mod keymap;
+pub mod language;
+pub mod lsp;
+pub mod outline;
+pub mod session;
+pub mod settings;
+pub mod snippet;
+pub mod syntax;
+
+pub use buffer::{Document, Edit, EditKind};
+pub use cursor::{Cursors, Selection};
+pub use display::DisplayMap;
