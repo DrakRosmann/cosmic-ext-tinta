@@ -18,6 +18,7 @@ pub mod snippet;
 pub mod structure;
 pub mod syntax;
 pub mod tasks;
+pub mod vim;
 
 pub use buffer::{Document, Edit, EditKind};
 pub use cursor::{Cursors, Selection};

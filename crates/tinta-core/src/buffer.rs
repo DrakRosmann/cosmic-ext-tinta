@@ -183,6 +183,9 @@ pub struct Document {
     log: Vec<ChangeRec>,
     /// Stops coalescing after a cursor move, so undo does not swallow two separate edits.
     break_coalescing: bool,
+    /// Everything until `end_group` undoes as one step.
+    group_open: bool,
+    group_state: Option<u64>,
 }
 
 impl std::fmt::Debug for Document {
@@ -226,6 +229,8 @@ impl Document {
             saved_state: Some(0),
             log: Vec::new(),
             break_coalescing: false,
+            group_open: false,
+            group_state: None,
         }
     }
 
@@ -423,6 +428,19 @@ impl Document {
         !self.redo.is_empty()
     }
 
+    /// Makes the edits until `end_group` one undo step, like everything typed in Vim's insert mode.
+    pub fn begin_group(&mut self) {
+        self.group_open = true;
+        self.group_state = None;
+        self.break_coalescing = true;
+    }
+
+    pub fn end_group(&mut self) {
+        self.group_open = false;
+        self.group_state = None;
+        self.break_coalescing = true;
+    }
+
     /// Next edit starts a new undo step.
     pub fn break_undo(&mut self) {
         self.break_coalescing = true;
@@ -539,7 +557,8 @@ impl Document {
                     && t.after == before
             });
         self.break_coalescing = false;
-        if coalesce {
+        let grouped = self.group_open && self.group_state == Some(self.state) && !self.undo.is_empty();
+        if coalesce || grouped {
             let t = self.undo.last_mut().unwrap();
             t.changes.extend(changes);
             t.after = cursors.clone();
@@ -557,12 +576,17 @@ impl Document {
                 state: self.state,
                 prev_state,
             });
+            if self.group_open {
+                self.group_state = Some(self.state);
+            }
         }
         map
     }
 
     pub fn undo(&mut self, cursors: &mut Cursors) -> bool {
         let Some(t) = self.undo.pop() else { return false };
+        self.group_open = false;
+        self.group_state = None;
         for c in t.changes.iter().rev() {
             self.raw_change(c.at, c.inserted.chars().count(), &c.removed);
         }
