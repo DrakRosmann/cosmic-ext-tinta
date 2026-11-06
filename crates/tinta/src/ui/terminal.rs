@@ -303,6 +303,42 @@ fn resolve(c: AnsiColor, colors: &Colors, dark: bool, fg: Color, bg: Color) -> C
     }
 }
 
+/// The whole line a grid cell is on, across rows the terminal wrapped, and the cell's column in it.
+fn logical_line(term: &Term<Proxy>, point: GridPoint) -> (String, usize) {
+    let grid = term.grid();
+    let last_col = term.columns().saturating_sub(1);
+    let wrapped = |line: Line| grid[line][Column(last_col)].flags.contains(Flags::WRAPLINE);
+    let top = Line(-(grid.history_size() as i32));
+    let bottom = Line(term.screen_lines() as i32 - 1);
+    let mut first = point.line;
+    while first > top && wrapped(first - 1) {
+        first -= 1;
+    }
+    let mut last = point.line;
+    while last < bottom && wrapped(last) {
+        last += 1;
+    }
+    let mut text = String::new();
+    let mut col = 0;
+    let mut line = first;
+    loop {
+        if line == point.line {
+            col = text.chars().count() + point.column.0;
+        }
+        for c in 0..=last_col {
+            let cell = &grid[line][Column(c)];
+            if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                text.push(cell.c);
+            }
+        }
+        if line == last {
+            break;
+        }
+        line += 1;
+    }
+    (text.trim_end().to_string(), col)
+}
+
 pub struct TermView<'a, Msg> {
     pub session: &'a Session,
     pub font: Font,
@@ -310,6 +346,8 @@ pub struct TermView<'a, Msg> {
     pub focused: bool,
     pub on_resize: Box<dyn Fn(u16, u16, f32, f32) -> Msg + 'a>,
     pub on_focus: Msg,
+    /// Ctrl+click: the text of the line, and the column clicked in it.
+    pub on_link: Box<dyn Fn(String, usize) -> Msg + 'a>,
 }
 
 #[derive(Default)]
@@ -402,6 +440,12 @@ impl<'a, Msg2: Clone + 'a> Widget<Msg2, Theme, Renderer> for TermView<'a, Msg2> 
                 let Some(p) = cursor.position_over(bounds) else { return };
                 shell.publish(self.on_focus.clone());
                 let (point, side) = self.grid_point(p, bounds, state.cell_w);
+                if state.mods.control() {
+                    let (text, col) = logical_line(&self.session.term.lock(), point);
+                    shell.publish((self.on_link)(text, col));
+                    shell.capture_event();
+                    return;
+                }
                 let clicks = match state.last_click {
                     Some((t, n)) if t.elapsed().as_millis() < 400 => (n % 3) + 1,
                     _ => 1,
@@ -479,7 +523,10 @@ impl<'a, Msg2: Clone + 'a> Widget<Msg2, Theme, Renderer> for TermView<'a, Msg2> 
         _v: &Rectangle,
         _r: &Renderer,
     ) -> mouse::Interaction {
-        if cursor.is_over(layout.bounds()) { mouse::Interaction::Text } else { mouse::Interaction::default() }
+        if !cursor.is_over(layout.bounds()) {
+            return mouse::Interaction::default();
+        }
+        if _t.state.downcast_ref::<State>().mods.control() { mouse::Interaction::Pointer } else { mouse::Interaction::Text }
     }
 
     fn draw(

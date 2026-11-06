@@ -735,6 +735,8 @@ impl App {
                     && let Some(e) = self.docs.get_mut(&id)
                 {
                     let rope = e.doc.rope.clone();
+                    // What the last build found stays until the next build.
+                    let from_build: Vec<Diag> = e.diags.iter().filter(|d| d.source.as_deref() == Some(super::tasks::TASK_SOURCE)).cloned().collect();
                     e.diags = items
                         .iter()
                         .map(|d| {
@@ -743,6 +745,7 @@ impl App {
                             Diag { start, end, severity: d.severity, message: d.message.clone(), source: d.source.clone(), raw: d.raw.clone() }
                         })
                         .collect();
+                    e.diags.extend(from_build);
                     e.diags.sort_by_key(|d| d.start);
                 }
                 if items.is_empty() {
@@ -949,6 +952,9 @@ impl App {
             for d in list {
                 out.push((path.clone(), d.range.start.line, d.range.start.character, d.severity, d.message.clone()));
             }
+        }
+        for (path, p) in &self.tasks.problems {
+            out.push((path.clone(), p.location.line, p.location.col, p.severity, p.message.clone()));
         }
         out.sort_by(|a, b| (a.3 as u8, &a.0, a.1).cmp(&(b.3 as u8, &b.0, b.1)));
         out

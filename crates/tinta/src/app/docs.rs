@@ -163,6 +163,7 @@ impl App {
         self.focus = Focus::Editor;
         self.watch_parent(&path);
         self.refresh_git_for(id);
+        self.attach_task_problems_to(&path);
         let t = self.lsp_open_doc(id);
         Task::batch([t, self.on_active_changed()])
     }

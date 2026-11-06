@@ -42,6 +42,7 @@ pub enum PAction {
     Snippet(String),
     Action(usize),
     Location(PathBuf, usize, usize),
+    Task(Box<tinta_core::tasks::Task>),
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +431,7 @@ impl App {
                     Err(e) => self.toast(e),
                 }
             }
+            PAction::Task(t) => self.run_task(*t),
             PAction::Snippet(body) => {
                 self.insert_snippet(&body, None);
                 Task::none()

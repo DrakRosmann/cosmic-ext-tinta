@@ -779,6 +779,75 @@ fn large_file_stays_responsive() {
 
 /// Menus are surfaces of their own, and closing one asks the same question as closing the window.
 #[test]
+fn a_build_task_runs_and_its_errors_mark_the_file() {
+    let dir = temp_dir("task");
+    std::fs::write(dir.join("a.c"), "int main(void) {\n  return nada;\n}\n").unwrap();
+    std::fs::write(dir.join("Makefile"), "all:\n\t@echo 'a.c:2:10: error: nada nao existe' >&2; exit 3\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    // These marks come from the build; clangd, if installed, would add its own.
+    ui.app.settings.lsp_enabled = false;
+    let _ = ui.app.open_path(&dir.join("a.c"));
+    ui.frame();
+    ui.cmd(Command::RunBuild);
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Tasks));
+    wait_for(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert_eq!(ui.app.tasks.exit, Some(Err(Some(2))), "what make says when a recipe fails");
+    assert_eq!(ui.app.tasks.problems.len(), 1);
+    let (_, e) = ui.app.active().unwrap();
+    assert_eq!(e.diags.len(), 1, "the open file got the mark");
+    assert_eq!(e.diags[0].message, "nada nao existe");
+    assert_eq!(e.doc.slice_string(e.diags[0].start, e.diags[0].end), "nada");
+    assert!(ui.app.problems().iter().any(|p| p.4 == "nada nao existe"));
+    // F6 goes there.
+    ui.app.jump_to(0, 0);
+    ui.cmd(Command::NextTaskProblem);
+    assert_eq!(ui.head(), (1, 9));
+    // A line of output with a place in it can be clicked.
+    let i = ui.app.tasks.lines.iter().position(|l| l.location.is_some()).unwrap();
+    ui.app.jump_to(0, 0);
+    let _ = ui.app.update(Message::Task(crate::app::TaskMsg::Jump(i)));
+    ui.frame();
+    assert_eq!(ui.head(), (1, 9));
+    // The next run starts clean.
+    std::fs::write(dir.join("Makefile"), "all:\n\t@echo ok\n").unwrap();
+    ui.cmd(Command::RerunTask);
+    wait_for(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert_eq!(ui.app.tasks.exit, Some(Ok(())));
+    assert!(ui.app.active().unwrap().1.diags.is_empty());
+    assert!(ui.app.tasks.lines.iter().any(|l| l.text == "ok"));
+}
+
+#[test]
+fn a_running_task_can_be_stopped() {
+    let dir = temp_dir("stop");
+    std::fs::write(dir.join("Makefile"), "all:\n\t@echo inicio; sleep 60; echo fim\n").unwrap();
+    let mut ui = Ui::new(vec![dir]);
+    ui.cmd(Command::RunBuild);
+    wait_for(&mut ui, |a| a.tasks.lines.iter().any(|l| l.text == "inicio"));
+    let started = Instant::now();
+    ui.cmd(Command::StopTask);
+    wait_for(&mut ui, |a| a.tasks.exit.is_some());
+    assert!(started.elapsed().as_secs() < 5, "the sleep underneath went too");
+    assert!(!ui.app.tasks.lines.iter().any(|l| l.text == "fim"));
+}
+
+#[test]
+fn ctrl_click_in_the_terminal_follows_a_location() {
+    let dir = temp_dir("link");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/a.rs"), "um\ndois\ntres\n").unwrap();
+    let mut ui = Ui::new(vec![dir]);
+    let _ = ui.app.update(Message::TermLink("erro em src/a.rs:3:2 agora".into(), 12));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.doc.file_name(), "a.rs");
+    assert_eq!(ui.head(), (2, 1));
+    // Nothing there: nothing happens, and it doesn't matter where the shell has wandered off to.
+    let _ = ui.app.update(Message::TermLink("sem nada aqui".into(), 3));
+    ui.frame();
+    assert_eq!(ui.app.tabs.len(), 1);
+}
+
+#[test]
 fn closing_a_menu_popup_does_not_quit() {
     let (ui, _) = Ui::with_file();
     assert!(ui.app.on_close_requested(window::Id::unique()).is_none());

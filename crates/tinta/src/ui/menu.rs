@@ -300,7 +300,21 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                 b(C::GitRefresh),
             ],
         ),
-        tree(tr("Terminal"), vec![b(C::ToggleTerminal), b(C::NewTerminal)]),
+        tree(
+            tr("Terminal"),
+            vec![
+                b(C::ToggleTerminal),
+                b(C::NewTerminal),
+                d(),
+                b(C::RunBuild),
+                b(C::RunTask),
+                b(C::RerunTask),
+                b(C::StopTask),
+                b(C::ShowTasks),
+                b(C::NextTaskProblem),
+                b(C::PrevTaskProblem),
+            ],
+        ),
         tree(tr("Help"), vec![b(C::ShowShortcuts), b(C::About)]),
     ];
     let bar = cosmic::widget::responsive_menu_bar()

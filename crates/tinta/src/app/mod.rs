@@ -10,6 +10,7 @@ mod lsp;
 mod palette;
 mod script;
 mod search;
+mod tasks;
 
 pub use explorer::{Explorer, RowAction};
 pub use git::{GitMsg, GitPanel};
@@ -18,6 +19,7 @@ pub use lsp::{Completion, HoverPopup, SignaturePopup};
 pub use editing::{FIND_INPUT, MAX_SHOWN_MATCHES, REPLACE_INPUT};
 pub use explorer::ExplorerMsg;
 pub use palette::{PAction, PItem, PaletteMode, PaletteMsg, PaletteState, PALETTE_INPUT};
+pub use tasks::{TaskMsg, TaskPanel};
 pub use search::{SearchMsg, SearchPanel, SearchRow, SEARCH_INPUT};
 
 use crate::bus;
@@ -63,6 +65,7 @@ pub enum SidebarView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelView {
     Terminal,
+    Tasks,
     Problems,
     Output,
 }
@@ -193,6 +196,8 @@ pub enum Message {
     Explorer(explorer::ExplorerMsg),
     Search(search::SearchMsg),
     Git(git::GitMsg),
+    Task(TaskMsg),
+    TermLink(String, usize),
     OutlineJump(usize),
     CompletionPick(usize),
     Lsp(core_lsp::Event),
@@ -233,6 +238,7 @@ pub struct App {
     pub explorer: Explorer,
     pub search: SearchPanel,
     pub git: GitPanel,
+    pub tasks: TaskPanel,
     pub sidebar: Option<SidebarView>,
     pub last_sidebar: SidebarView,
     pub sidebar_w: f32,
@@ -328,6 +334,7 @@ impl Application for App {
             explorer: Explorer::default(),
             search: SearchPanel::default(),
             git: GitPanel::default(),
+            tasks: TaskPanel::default(),
             sidebar: None,
             last_sidebar: SidebarView::Explorer,
             sidebar_w: 280.0,
@@ -644,6 +651,8 @@ impl App {
             Message::Explorer(m) => self.on_explorer(m),
             Message::Search(m) => self.on_search_msg(m),
             Message::Git(m) => self.on_git(m),
+            Message::Task(m) => self.on_task(m),
+            Message::TermLink(text, col) => self.on_term_link(text, col),
             Message::OutlineJump(line) => {
                 self.push_nav();
                 self.jump_to(line, 0);

@@ -191,6 +191,14 @@ commands! {
     GitCheckout, "git.checkout", "Git: Switch Branch…", "Git: trocar de branch…", [];
     GitDiffFile, "git.diff", "Git: Show Changes in File", "Git: mostrar alterações do arquivo", [];
     CompareSaved, "file.compareSaved", "Compare with Saved", "Comparar com o arquivo salvo", [];
+    // Tasks
+    RunBuild, "task.build", "Run Build Task", "Executar tarefa de build", ["ctrl+shift+b"];
+    RunTask, "palette.tasks", "Run Task…", "Executar tarefa…", [];
+    RerunTask, "task.rerun", "Rerun Last Task", "Repetir última tarefa", [];
+    StopTask, "task.stop", "Stop Task", "Parar tarefa", [];
+    ShowTasks, "view.tasks", "Show Task Output", "Mostrar saída das tarefas", [];
+    NextTaskProblem, "task.nextProblem", "Next Build Problem", "Próximo problema do build", ["f6"];
+    PrevTaskProblem, "task.prevProblem", "Previous Build Problem", "Problema anterior do build", ["shift+f6"];
     // Document
     SetLf, "doc.lf", "Line Endings: LF", "Fim de linha: LF", [];
     SetCrlf, "doc.crlf", "Line Endings: CRLF", "Fim de linha: CRLF", [];

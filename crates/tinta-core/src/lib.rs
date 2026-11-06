@@ -16,6 +16,7 @@ pub mod session;
 pub mod settings;
 pub mod snippet;
 pub mod syntax;
+pub mod tasks;
 
 pub use buffer::{Document, Edit, EditKind};
 pub use cursor::{Cursors, Selection};

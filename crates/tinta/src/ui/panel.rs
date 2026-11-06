@@ -23,7 +23,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let current = app.panel.unwrap_or(PanelView::Terminal);
     let mut header = row::with_capacity(8).spacing(2).align_y(Alignment::Center).width(Length::Fill);
     header = header.push(tab_btn(tr("Terminal").to_string(), current == PanelView::Terminal, Message::PanelShow(PanelView::Terminal)));
-    let count: usize = app.project_diags.values().map(Vec::len).sum();
+    let task_label = if app.tasks.running.is_some() { format!("{} …", tr("Tasks")) } else { tr("Tasks").to_string() };
+    header = header.push(tab_btn(task_label, current == PanelView::Tasks, Message::PanelShow(PanelView::Tasks)));
+    let count: usize = app.project_diags.values().map(Vec::len).sum::<usize>() + app.tasks.problems.len();
     let problems = if count > 0 { format!("{} ({count})", tr("Problems")) } else { tr("Problems").to_string() };
     header = header.push(tab_btn(problems, current == PanelView::Problems, Message::PanelShow(PanelView::Problems)));
     header = header.push(tab_btn(tr("Output").to_string(), current == PanelView::Output, Message::PanelShow(PanelView::Output)));
@@ -39,10 +41,26 @@ pub fn view(app: &App) -> Element<'_, Message> {
         header = header.push(button::custom(icon::icon(icons::plus()).size(14)).padding(5).class(theme::Button::Icon).on_press(Message::Cmd(Command::NewTerminal)));
         header = header.push(button::custom(icon::icon(icons::minus()).size(14)).padding(5).class(theme::Button::Icon).on_press(Message::TermKill(app.active_term)));
     }
+    if current == PanelView::Tasks {
+        if app.tasks.running.is_some() {
+            header = header.push(widget::tooltip(
+                button::custom(icon::icon(icons::close()).size(14)).padding(5).class(theme::Button::Icon).on_press(Message::Cmd(Command::StopTask)),
+                text(tr("Stop")).size(12),
+                widget::tooltip::Position::Top,
+            ));
+        } else if app.tasks.last.is_some() {
+            header = header.push(widget::tooltip(
+                button::custom(icon::icon(icons::refresh()).size(14)).padding(5).class(theme::Button::Icon).on_press(Message::Cmd(Command::RerunTask)),
+                text(tr("Run again")).size(12),
+                widget::tooltip::Position::Top,
+            ));
+        }
+    }
     header = header.push(button::custom(icon::icon(icons::close()).size(14)).padding(5).class(theme::Button::Icon).on_press(Message::PanelClose));
 
     let body: Element<'_, Message> = match current {
         PanelView::Terminal => terminal(app),
+        PanelView::Tasks => tasks_view(app),
         PanelView::Problems => problems_view(app),
         PanelView::Output => output_view(app),
     };
@@ -69,6 +87,7 @@ fn terminal(app: &App) -> Element<'_, Message> {
         focused: app.focus == Focus::Terminal && app.palette.is_none(),
         on_resize: Box::new(move |c, r, w, h| Message::TermResize(id, c, r, w, h)),
         on_focus: Message::TermFocus,
+        on_link: Box::new(Message::TermLink),
     }
     .into()
 }
@@ -109,6 +128,46 @@ fn problems_view(app: &App) -> Element<'_, Message> {
         );
     }
     scrollable(col).width(Length::Fill).height(Length::Fill).into()
+}
+
+fn tasks_view(app: &App) -> Element<'_, Message> {
+    let t = &app.tasks;
+    let Some(task) = &t.last else {
+        return container(text(tr("No task has run yet")).size(13).class(theme::Text::Color(dim_text()))).padding(12).into();
+    };
+    let theme_now = cosmic::theme::active();
+    let c = theme_now.cosmic();
+    let err: Color = c.destructive.base.into();
+    let warn: Color = c.warning.base.into();
+    let ok: Color = c.success.base.into();
+    let accent: Color = c.accent.base.into();
+    let (status, status_color) = match (&t.exit, t.running) {
+        (_, Some(_)) => (format!("{} {}", tr("Running"), task.command), dim_text()),
+        (Some(Ok(())), _) => (format!("{}: {}", task.command, tr("finished")), ok),
+        (Some(Err(Some(code))), _) => (format!("{}: {} {code}", task.command, tr("Exit code")), err),
+        _ => (task.command.clone(), err),
+    };
+    let start = t.lines.len().saturating_sub(600);
+    let mut col = column::with_capacity(t.lines.len() - start + 1).padding([2, 12]).width(Length::Fill);
+    col = col.push(text(status).size(12).font(app.metrics.font).class(theme::Text::Color(status_color)));
+    for (i, l) in t.lines.iter().enumerate().skip(start) {
+        let color = match l.severity {
+            Some(Severity::Error) => Some(err),
+            Some(Severity::Warning) => Some(warn),
+            _ if l.location.is_some() => Some(accent),
+            _ => None,
+        };
+        let mut label = text(l.text.as_str()).size(12).font(app.metrics.font).wrapping(cosmic::iced::widget::text::Wrapping::None);
+        if let Some(c) = color {
+            label = label.class(theme::Text::Color(c));
+        }
+        if l.location.is_some() {
+            col = col.push(button::custom(label).class(crate::ui::row_button(false)).padding(0).on_press(Message::Task(crate::app::TaskMsg::Jump(i))));
+        } else {
+            col = col.push(label);
+        }
+    }
+    scrollable(col).width(Length::Fill).height(Length::Fill).anchor_bottom().into()
 }
 
 fn output_view(app: &App) -> Element<'_, Message> {
