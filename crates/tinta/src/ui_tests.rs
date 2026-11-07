@@ -352,7 +352,9 @@ fn fold_arrow_in_the_gutter_folds_and_unfolds() {
 fn line_number_click_selects_the_line() {
     let (mut ui, _) = Ui::with_file();
     let o = ui.origin_from_view();
-    let p = Point::new(o.x + 12.0, o.y + ui.app.metrics.line_h * 1.5);
+    let c = ui.cell(1, 0);
+    let g = Geometry::new(SOURCE.lines().count() + 1, ui.app.active().unwrap().0.view_w, &ui.app.metrics, &ui.app.settings);
+    let p = Point::new(o.x + g.gutter_w - 24.0, c.y);
     ui.click_at(p);
     assert_eq!(ui.selection_text(), "    let alpha = 1;\n");
 }
@@ -967,6 +969,171 @@ fn source_control_opens_diffs_against_the_right_versions() {
     assert_eq!((d.added, d.removed), (1, 0));
 }
 
+fn have_gdb_dap() -> bool {
+    tinta_core::dap::resolve_adapter("gdb").is_ok() && std::process::Command::new("cc").arg("--version").output().is_ok()
+}
+
+const DEBUG_PROGRAM: &str = "#include <stdio.h>\n\nstruct ponto { int x; int y; };\n\nint dobro(int n) {\n    int r = n * 2;\n    return r;\n}\n\nint main(void) {\n    struct ponto p = { 3, 4 };\n    int total = dobro(p.x);\n    total += p.y;\n    printf(\"total %d\\n\", total);\n    return 7;\n}\n";
+
+/// A click in the margin to the left of the line numbers, on the text's row.
+fn margin(ui: &Ui, line: usize) -> Point {
+    let c = ui.cell(line, 0);
+    let (t, e) = ui.app.active().unwrap();
+    let g = Geometry::new(e.doc.len_lines(), t.view_w, &ui.app.metrics, &ui.app.settings);
+    Point::new(c.x - g.text_x + 12.0, c.y)
+}
+
+#[test]
+fn debugging_a_program_through_the_interface() {
+    if !have_gdb_dap() {
+        eprintln!("skipped: no gdb with DAP");
+        return;
+    }
+    let dir = temp_dir("debug");
+    let src = dir.join("prog.c");
+    std::fs::write(&src, DEBUG_PROGRAM).unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.frame();
+
+    // A click in the margin sets a breakpoint, and doesn't touch the selection.
+    let before = ui.head();
+    let at = margin(&ui, 5);
+    ui.click_at(at);
+    assert_eq!(ui.head(), before);
+    assert_eq!(ui.app.debug.breakpoints[&src][0].line, 5);
+    // F9 on the printf line.
+    ui.app.jump_to(13, 0);
+    ui.key("f9", Modifiers::empty(), None);
+    assert_eq!(ui.app.debug.breakpoints[&src].iter().map(|b| b.line).collect::<Vec<_>>(), vec![5, 13]);
+    // Clicking again takes it off.
+    let at = margin(&ui, 13);
+    ui.click_at(at);
+    assert_eq!(ui.app.debug.breakpoints[&src].len(), 1);
+
+    // Lines added above move it along with its code.
+    ui.app.jump_to(0, 0);
+    ui.key("enter", Modifiers::empty(), None);
+    assert_eq!(ui.app.debug.breakpoints[&src][0].line, 6);
+    ui.key("backspace", Modifiers::empty(), None);
+    assert_eq!(ui.app.debug.breakpoints[&src][0].line, 5);
+
+    // F5 compiles it through the task panel, and stops at the breakpoint.
+    ui.key("f5", Modifiers::empty(), None);
+    assert_eq!(ui.app.sidebar, Some(crate::app::SidebarView::Debug));
+    wait_for(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().is_some_and(|s| !s.variable_rows().is_empty()));
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    let loc = |ui: &Ui| ui.app.debug.session.as_ref().unwrap().exec_location().map(|(_, l, top)| (l, top));
+    assert_eq!(loc(&ui), Some((5, true)));
+    assert_eq!(ui.head().0, 5, "the caret goes to where it stopped");
+    assert_eq!(ui.app.debug.breakpoints[&src][0].state, tinta_core::dap::BpState::Verified);
+
+    // F10 steps, and the panels draw whatever comes.
+    ui.key("f10", Modifiers::empty(), None);
+    let value = |a: &App, path: &str| a.debug.session.as_ref()?.variable_rows().into_iter().find(|r| r.path == path).map(|r| r.value);
+    wait_for(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().unwrap().exec_location().is_some_and(|l| l.1 == 6) && value(a, "Locals/r").is_some());
+    assert_eq!(value(&ui.app, "Locals/r").as_deref(), Some("6"));
+
+    // The call stack is clickable: the frame's variables and line come up.
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::SelectFrame(1)));
+    wait_for(&mut ui, |a| value(a, "Locals/total").is_some());
+    assert_eq!(loc(&ui), Some((11, false)));
+    assert_eq!(ui.head().0, 11);
+
+    // Shift+F11 leaves dobro, F11 is a step in rather than full screen.
+    ui.key("f11", Modifiers::empty(), None);
+    assert!(!ui.app.fullscreen, "F11 steps while debugging");
+    wait_for(&mut ui, |a| a.debug.is_stopped());
+
+    // Hovering asks the debugger, not the language server.
+    assert!(ui.app.debug_hover("total", 1, 0));
+
+    // The console evaluates.
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Input("2 + 3".into())));
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Submit));
+    wait_for(&mut ui, |a| a.debug.console.iter().any(|l| l.text == "5"));
+
+    // Off to the end: the program's output and its exit code come through, and the session closes.
+    ui.key("f5", Modifiers::empty(), None);
+    wait_for(&mut ui, |a| a.debug.session.is_none());
+    let text: Vec<_> = ui.app.debug.console.iter().map(|l| l.text.as_str()).collect();
+    assert!(text.contains(&"total 10"), "{text:?}");
+    assert!(text.iter().any(|l| l.ends_with(" 7")), "{text:?}");
+    assert!(ui.app.debug.breakpoints[&src][0].line == 5, "the breakpoint stays for next time");
+
+    // Without a session, F11 is full screen again.
+    assert!(!ui.app.debug.is_live());
+    ui.frame();
+}
+
+#[test]
+fn a_failed_build_shows_its_errors_and_does_not_start_anything() {
+    if !have_gdb_dap() {
+        return;
+    }
+    let dir = temp_dir("debugbad");
+    let src = dir.join("ruim.c");
+    std::fs::write(&src, "int main(void) {\n    return nada;\n}\n").unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.key("f5", Modifiers::empty(), None);
+    wait_for(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Tasks));
+    assert!(ui.app.debug.session.is_none());
+    assert!(ui.app.tasks.problems.iter().any(|(p, _)| p.ends_with("ruim.c")), "{:?}", ui.app.tasks.problems);
+}
+
+#[test]
+fn stopping_a_session_lets_the_next_one_run_and_breakpoints_are_remembered() {
+    if !have_gdb_dap() {
+        return;
+    }
+    let dir = temp_dir("debugstop");
+    let src = dir.join("prog.c");
+    std::fs::write(&src, DEBUG_PROGRAM).unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.app.jump_to(5, 0);
+    ui.key("f9", Modifiers::empty(), None);
+    ui.key("f5", Modifiers::empty(), None);
+    wait_for(&mut ui, |a| a.debug.is_stopped());
+    ui.key("f5", Modifiers::SHIFT, None);
+    assert!(ui.app.debug.session.is_none());
+    // A breakpoint set while nothing runs goes in with the next session.
+    ui.app.jump_to(13, 0);
+    ui.key("f9", Modifiers::empty(), None);
+    let saved = ui.app.build_session();
+    assert_eq!(saved.breakpoints[&src].len(), 2);
+    let back: tinta_core::session::Session = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    assert_eq!(back.breakpoints[&src].iter().map(|b| b.line).collect::<Vec<_>>(), vec![5, 13]);
+    // An old session file, from before there were breakpoints, still loads.
+    let mut v = serde_json::to_value(&saved).unwrap();
+    v.as_object_mut().unwrap().remove("breakpoints");
+    v.as_object_mut().unwrap().remove("watches");
+    assert!(serde_json::from_value::<tinta_core::session::Session>(v).is_ok());
+    // Restart goes through a fresh session.
+    ui.key("f5", Modifiers::empty(), None);
+    wait_for(&mut ui, |a| a.debug.is_stopped());
+    let first = ui.app.debug.generation;
+    ui.key("f5", Modifiers::CTRL | Modifiers::SHIFT, None);
+    wait_for(&mut ui, |a| a.debug.generation > first && a.debug.is_stopped());
+    ui.key("f5", Modifiers::SHIFT, None);
+}
+
+#[test]
+fn saying_what_is_missing_when_a_language_has_no_debugger() {
+    let dir = temp_dir("debugnone");
+    let p = dir.join("notas.md");
+    std::fs::write(&p, "# oi\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.key("f5", Modifiers::empty(), None);
+    assert!(ui.app.debug.session.is_none());
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    assert!(ui.app.debug.console.iter().any(|l| l.text.contains("launch.json")), "{:?}", ui.app.debug.console);
+    // A file with no name can't hold a breakpoint, and says why.
+    ui.cmd(Command::NewFile);
+    ui.key("f9", Modifiers::empty(), None);
+    assert!(ui.app.debug.breakpoints.is_empty());
+    assert!(ui.app.toast.is_some());
+}
+
 /// Menus are surfaces of their own, and closing one asks the same question as closing the window.
 #[test]
 fn a_build_task_runs_and_its_errors_mark_the_file() {
@@ -1062,5 +1229,5 @@ fn menu_labels_are_really_drawn() {
     drop(bar);
     let Renderer::Secondary(sk) = &mut r else { panic!() };
     let texts: Vec<String> = sk.layers().iter().flat_map(|l| l.text.iter().map(|t| format!("{t:?}").chars().take(160).collect::<String>())).collect();
-    assert_eq!(texts.len(), 9, "{texts:?}");
+    assert_eq!(texts.len(), 10, "{texts:?}");
 }

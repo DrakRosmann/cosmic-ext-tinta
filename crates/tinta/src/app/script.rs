@@ -205,6 +205,13 @@ impl App {
             "active": active,
             "tabs": self.tabs.len(),
             "groups": self.groups.iter().map(|g| g.tabs().len()).collect::<Vec<_>>(),
+            "debug": {
+                "state": self.debug.session.as_ref().map(|s| format!("{:?}", s.state)),
+                "frames": self.debug.session.as_ref().map(|s| s.frames.iter().map(|f| json!([f.name, f.line])).collect::<Vec<_>>()),
+                "variables": self.debug.session.as_ref().map(|s| s.variable_rows().iter().map(|r| json!([r.path, r.value])).collect::<Vec<_>>()),
+                "breakpoints": self.debug.breakpoints.iter().map(|(p, l)| json!([p, l.iter().map(|b| json!([b.line, format!("{:?}", b.state)])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
+                "console": self.debug.console.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
+            },
             "sidebar": self.sidebar.map(|s| format!("{s:?}")),
             "panel": self.panel.map(|s| format!("{s:?}")),
             "palette": self.palette.as_ref().map(|p| json!({

@@ -247,6 +247,13 @@ impl App {
         if !on_text {
             return Task::none();
         }
+        // While the program is paused, what matters about a name is its value.
+        if diag_text.is_empty() {
+            let (col, text) = (self.docs[&doc].doc.line_col(pos).1, self.docs[&doc].doc.line_slice(line).to_string());
+            if self.debug_hover(&text, col, pos) {
+                return Task::none();
+            }
+        }
         let (Some(key), Some(path)) = (key, path) else { return Task::none() };
         self.lsp_flush(doc);
         let Some(s) = self.lsp.get(&key).filter(|s| s.ready) else { return Task::none() };

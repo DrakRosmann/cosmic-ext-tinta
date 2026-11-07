@@ -455,13 +455,13 @@ mod tests {
         let mut f = Folds::default();
         f.add(10, 20);
         // Line added above: shifts down.
-        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 2, removed_lines: 0, inserted_lines: 1 });
+        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 2, removed_lines: 0, inserted_lines: 1, ..Default::default() });
         assert_eq!(f.ranges, vec![(11, 21)]);
         // Below: stays.
-        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 30, removed_lines: 0, inserted_lines: 1 });
+        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 30, removed_lines: 0, inserted_lines: 1, ..Default::default() });
         assert_eq!(f.ranges, vec![(11, 21)]);
         // Deleting across it: opens.
-        f.on_change(&ChangeRec { at: 0, removed: 9, inserted: 0, start_line: 15, removed_lines: 9, inserted_lines: 0 });
+        f.on_change(&ChangeRec { at: 0, removed: 9, inserted: 0, start_line: 15, removed_lines: 9, inserted_lines: 0, ..Default::default() });
         assert!(f.ranges.is_empty());
     }
 

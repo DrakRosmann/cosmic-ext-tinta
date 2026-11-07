@@ -43,6 +43,7 @@ pub enum PAction {
     Action(usize),
     Location(PathBuf, usize, usize),
     Task(Box<tinta_core::tasks::Task>),
+    DebugConfig(String),
 }
 
 #[derive(Debug, Clone)]
@@ -432,6 +433,10 @@ impl App {
                 }
             }
             PAction::Task(t) => self.run_task(*t),
+            PAction::DebugConfig(name) => {
+                self.debug.selected = Some(name);
+                self.debug_start(false)
+            }
             PAction::Snippet(body) => {
                 self.insert_snippet(&body, None);
                 Task::none()

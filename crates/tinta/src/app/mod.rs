@@ -1,6 +1,7 @@
 //! The application: all state lives here, every change goes through `update`.
 
 mod commands;
+mod debug;
 mod diff;
 mod docs;
 mod editing;
@@ -21,6 +22,7 @@ pub use lsp::{Completion, HoverPopup, SignaturePopup};
 pub use editing::{FIND_INPUT, MAX_SHOWN_MATCHES, REPLACE_INPUT};
 pub use explorer::ExplorerMsg;
 pub use palette::{PAction, PItem, PaletteMode, PaletteMsg, PaletteState, PALETTE_INPUT};
+pub use debug::{DEBUG_INPUT, DebugMsg, DebugPanel, WATCH_INPUT};
 pub use tasks::{TaskMsg, TaskPanel};
 pub use vim::{VIM_LINE, VimMsg};
 pub use search::{SearchMsg, SearchPanel, SearchRow, SEARCH_INPUT};
@@ -63,6 +65,7 @@ pub enum SidebarView {
     Search,
     Git,
     Outline,
+    Debug,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +74,7 @@ pub enum PanelView {
     Tasks,
     Problems,
     Output,
+    Debug,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -95,6 +99,7 @@ pub enum DialogState {
     RenamePath(PathBuf),
     TrashPath(PathBuf),
     RenameSymbol,
+    BreakpointCondition(PathBuf, usize),
     ConfirmDiscard(tinta_core::git::StatusEntry),
     About,
     Shortcuts,
@@ -203,6 +208,7 @@ pub enum Message {
     Git(git::GitMsg),
     Task(TaskMsg),
     Vim(VimMsg),
+    Debug(DebugMsg),
     TermLink(String, usize),
     OutlineJump(usize),
     CompletionPick(usize),
@@ -245,6 +251,7 @@ pub struct App {
     pub search: SearchPanel,
     pub git: GitPanel,
     pub tasks: TaskPanel,
+    pub debug: DebugPanel,
     pub vim: tinta_core::vim::Vim,
     pub vim_line: Option<(char, String)>,
     pub vim_highlight: Option<String>,
@@ -344,6 +351,7 @@ impl Application for App {
             search: SearchPanel::default(),
             git: GitPanel::default(),
             tasks: TaskPanel::default(),
+            debug: DebugPanel::default(),
             vim: tinta_core::vim::Vim::new(),
             vim_line: None,
             vim_highlight: None,
@@ -673,6 +681,7 @@ impl App {
             Message::Git(m) => self.on_git(m),
             Message::Task(m) => self.on_task(m),
             Message::Vim(m) => self.on_vim(m),
+            Message::Debug(m) => self.on_debug(m),
             Message::TermLink(text, col) => self.on_term_link(text, col),
             Message::OutlineJump(line) => {
                 self.push_nav();

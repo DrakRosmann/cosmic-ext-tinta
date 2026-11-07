@@ -159,6 +159,7 @@ fn activity_rail(app: &App) -> Element<'_, Message> {
             item(icons::search(), SidebarView::Search, "Search"),
             git_el,
             item(icons::outline(), SidebarView::Outline, "Outline"),
+            item(icons::debug(), SidebarView::Debug, "Run and Debug"),
         ])
         .spacing(4)
         .padding([6, 4])
@@ -230,6 +231,8 @@ fn group_view(app: &App, g: usize) -> Element<'_, Message> {
         focused: active_group && app.focus == Focus::Editor && app.palette.is_none() && app.dialog.is_none(),
         current_match: if active_group { app.find.current } else { None },
         inline_blame: blame,
+        breakpoints: entry.doc.path.as_ref().and_then(|p| app.debug.breakpoints.get(p)).map_or(&[], Vec::as_slice),
+        exec_line: app.debug.session.as_ref().and_then(|s| s.exec_location()).filter(|(p, _, _)| entry.doc.path.as_deref() == Some(*p)).map(|(_, l, top)| (l, top)),
         cursor_style: match (app.settings.vim_mode, app.vim.mode) {
             (false, _) | (true, tinta_core::vim::Mode::Insert) => app.settings.cursor_style,
             (true, tinta_core::vim::Mode::Normal) => tinta_core::settings::CursorStyle::Block,

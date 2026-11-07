@@ -113,6 +113,12 @@ fn main() {
                 at(w, num(0), num(1));
                 press(2);
             }
+            // X11's keycode: evdev's plus 8. `key 57` is n on a US layout, `key 36` is Enter.
+            "key" => {
+                fake(2, num(0) as u8, 0, 0);
+                fake(3, num(0) as u8, 0, 0);
+                std::thread::sleep(Duration::from_millis(30));
+            }
             "down" => button(1, true),
             "up" => button(1, false),
             "wheel" => press(if rest.first() == Some(&"up") { 4 } else { 5 }),

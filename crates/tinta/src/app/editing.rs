@@ -198,7 +198,7 @@ impl App {
 
     pub fn on_editor_event(&mut self, id: crate::state::TabId, ev: EditorEvent) -> Task<Message> {
         // A click in another split makes it the active one.
-        if matches!(ev, EditorEvent::Press { .. } | EditorEvent::GutterSelect { .. } | EditorEvent::FoldToggle { .. } | EditorEvent::SecondaryPress { .. }) {
+        if matches!(ev, EditorEvent::Press { .. } | EditorEvent::BreakpointToggle { .. } | EditorEvent::GutterSelect { .. } | EditorEvent::FoldToggle { .. } | EditorEvent::SecondaryPress { .. }) {
             if let Some(g) = self.groups.iter().position(|g| g.active_tab() == Some(id)) {
                 self.active_group = g;
             }
@@ -256,6 +256,20 @@ impl App {
                 self.sync_active_structure();
                 self.toggle_fold_at_row(id, row);
                 Task::none()
+            }
+            EditorEvent::BreakpointToggle { row } => {
+                let target = self.tabs.get(&id).and_then(|t| {
+                    let e = self.docs.get(&t.doc)?;
+                    Some((e.doc.path.clone(), t.map.row(&e.doc, row).line as usize))
+                });
+                match target {
+                    Some((Some(path), line)) => {
+                        self.toggle_breakpoint_at(&path, line);
+                        Task::none()
+                    }
+                    Some((None, _)) => self.toast(crate::i18n::tr("Save the file first")),
+                    None => Task::none(),
+                }
             }
             EditorEvent::GutterSelect { row, extend } => {
                 self.gutter_select(id, row, extend);

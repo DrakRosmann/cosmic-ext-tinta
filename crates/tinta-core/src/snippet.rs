@@ -345,7 +345,7 @@ mod tests {
         let mut s = Session::new(&parsed, 10).unwrap();
         assert_eq!(s.current(), &[(12, 13)]);
         // Typing "xyz" over the first stop.
-        assert!(s.on_change(&ChangeRec { at: 12, removed: 1, inserted: 3, start_line: 0, removed_lines: 0, inserted_lines: 0 }));
+        assert!(s.on_change(&ChangeRec { at: 12, removed: 1, inserted: 3, start_line: 0, removed_lines: 0, inserted_lines: 0, ..Default::default() }));
         assert_eq!(s.current(), &[(12, 15)]);
         assert_eq!(s.next().unwrap(), &[(17, 18)]);
         assert_eq!(s.next().unwrap(), &[(19, 19)]);

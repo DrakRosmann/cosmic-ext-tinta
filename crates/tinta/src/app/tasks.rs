@@ -264,6 +264,7 @@ impl App {
                 }
                 self.tasks.running = None;
                 self.tasks.exit = Some(if code == Some(0) { Ok(()) } else { Err(code) });
+                self.debug_build_finished(g, code == Some(0));
                 let name = self.tasks.last.as_ref().map(|t| t.name.clone()).unwrap_or_default();
                 let errors = self.tasks.problems.iter().filter(|(_, p)| p.severity == Severity::Error).count();
                 let warnings = self.tasks.problems.len() - errors;

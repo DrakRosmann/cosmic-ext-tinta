@@ -19,11 +19,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Some(SidebarView::Search) => search_view(app),
         Some(SidebarView::Git) => git_view(app),
         Some(SidebarView::Outline) => outline_view(app),
+        Some(SidebarView::Debug) => super::debug_view::sidebar(app),
         _ => explorer_view(app),
     }
 }
 
-fn header<'a>(title: String, buttons: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+pub(super) fn header<'a>(title: String, buttons: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     let mut r = row::with_capacity(buttons.len() + 2).align_y(Alignment::Center).padding([6, 8, 4, 12]).spacing(2);
     r = r.push(text(title.to_uppercase()).size(11).font(cosmic::font::semibold()).width(Length::Fill).wrapping(cosmic::iced::widget::text::Wrapping::None));
     for b in buttons {

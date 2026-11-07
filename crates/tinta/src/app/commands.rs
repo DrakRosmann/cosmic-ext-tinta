@@ -277,6 +277,36 @@ impl App {
                 }
                 return Task::batch(t);
             }
+            C::DebugStart => return self.debug_start(false),
+            C::DebugStop => self.debug_stop(),
+            C::DebugRestart => return self.debug_restart(),
+            C::DebugPause => {
+                if let Some(s) = &mut self.debug.session {
+                    s.pause();
+                }
+            }
+            C::StepOver => return self.debug_step(|s| s.step_over()),
+            C::StepInto => return self.debug_step(|s| s.step_in()),
+            C::StepOut => {
+                if let Some(s) = &mut self.debug.session {
+                    s.step_out();
+                }
+            }
+            C::ToggleBreakpoint => return self.toggle_breakpoint_here(),
+            C::BreakpointCondition => return self.start_breakpoint_condition(),
+            C::RemoveBreakpoints => {
+                let paths: Vec<_> = self.debug.breakpoints.keys().cloned().collect();
+                self.debug.breakpoints.clear();
+                if let Some(s) = self.debug.session.as_mut().filter(|s| s.is_live()) {
+                    for p in paths {
+                        s.send_breakpoints(&p, &[]);
+                    }
+                }
+            }
+            C::ShowDebug => return self.show_sidebar(SidebarView::Debug),
+            C::ShowDebugConsole => self.panel = Some(PanelView::Debug),
+            C::DebugConfigure => return self.debug_configure(),
+            C::DebugSelectConfig => return self.debug_pick_config(),
             C::ToggleVim => {
                 self.settings.vim_mode = !self.settings.vim_mode;
                 self.vim = tinta_core::vim::Vim::new();
@@ -823,6 +853,10 @@ impl App {
                     Some(DialogState::RenamePath(p)) => self.rename_path(p, &input),
                     Some(DialogState::TrashPath(p)) => self.trash_path(p),
                     Some(DialogState::RenameSymbol) => self.do_rename(input),
+                    Some(DialogState::BreakpointCondition(path, line)) => {
+                        self.set_breakpoint_condition(path, line, input);
+                        Task::none()
+                    }
                     Some(DialogState::ConfirmDiscard(entry)) => self.git_discard(entry),
                     _ => Task::none(),
                 }

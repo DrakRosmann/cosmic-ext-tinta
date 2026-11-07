@@ -55,6 +55,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(p) = &app.lsp_progress {
         r = r.push(container(text(p.clone()).size(12).class(theme::Text::Color(dim_text())).wrapping(cosmic::iced::widget::text::Wrapping::None)).clip(true).padding([0, 8]).max_width(420.0));
     }
+    if let Some(s) = app.debug.session.as_ref().filter(|s| s.is_live()) {
+        let state = if s.is_stopped() { tr("Paused") } else { tr("Running") };
+        r = r.push(icon_item(icons::debug(), format!("{} · {state}", s.name), Message::SidebarShow(crate::app::SidebarView::Debug)));
+    }
     if let Some(k) = app.keymap.pending_label() {
         r = r.push(text(format!("{k} …")).size(12));
     }

@@ -146,7 +146,7 @@ pub struct LspChange {
 }
 
 /// Something that changed in the text; other views and overlays translate themselves with it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChangeRec {
     pub at: usize,
     pub removed: usize,
@@ -154,6 +154,36 @@ pub struct ChangeRec {
     pub start_line: usize,
     pub removed_lines: usize,
     pub inserted_lines: usize,
+    /// The edit began at the start of its line.
+    pub starts_line: bool,
+    /// What it removed ended exactly at the start of a line.
+    pub ends_at_line_start: bool,
+    /// ...or at the end of one, so nothing of that line is left.
+    pub ends_at_line_end: bool,
+    pub inserted_ends_newline: bool,
+}
+
+impl ChangeRec {
+    /// Where the code on a line went, for marks that belong to that code. `None`: it's gone.
+    pub fn map_line(&self, line: usize) -> Option<usize> {
+        let (s, r, i) = (self.start_line, self.removed_lines, self.inserted_lines);
+        if line < s {
+            return Some(line);
+        }
+        if line > s + r {
+            return Some(line + i - r);
+        }
+        if r == 0 {
+            // Enter at the very start of the line pushes it down; anywhere else it stays.
+            return Some(if self.starts_line && self.removed == 0 && self.inserted_ends_newline { line + i } else { line });
+        }
+        if line == s + r {
+            // Backspace at the start of a line joins it to the one above, and it lives on there.
+            return if self.ends_at_line_start || !self.ends_at_line_end { Some(s + i) } else { None };
+        }
+        // The head of the first line survives, unless the edit started at its first char.
+        (line == s && !self.starts_line).then_some(s)
+    }
 }
 
 pub struct Document {
@@ -486,6 +516,11 @@ impl Document {
         let removed: String = self.rope.slice(at..at + remove).to_string();
         let removed_lines = removed.bytes().filter(|b| *b == b'\n').count();
         let inserted_lines = insert.bytes().filter(|b| *b == b'\n').count();
+        let starts_line = self.rope.line_to_char(self.rope.char_to_line(at)) == at;
+        let end = at + remove;
+        let end_line = self.rope.char_to_line(end);
+        let ends_at_line_start = self.rope.line_to_char(end_line) == end;
+        let ends_at_line_end = end >= self.rope.len_chars() || self.rope.char(end) == '\n';
         if remove > 0 {
             self.rope.remove(at..at + remove);
         }
@@ -493,6 +528,10 @@ impl Document {
             self.rope.insert(at, insert);
         }
         self.log.push(ChangeRec {
+            starts_line,
+            ends_at_line_start,
+            ends_at_line_end,
+            inserted_ends_newline: insert.ends_with('\n'),
             at,
             removed: remove,
             inserted: insert.chars().count(),

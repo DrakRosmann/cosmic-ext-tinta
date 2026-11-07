@@ -458,6 +458,7 @@ impl App {
 
     /// Only the main instance owns the session and the backups.
     pub fn persist_on_quit(&mut self) {
+        self.debug_shutdown();
         if !self.new_session {
             self.write_backups(true);
             super::save_session(self);
@@ -500,6 +501,8 @@ impl App {
             recent_files: self.recent_files.clone(),
             recent_folders: self.recent_folders.clone(),
             expanded: self.explorer.expanded.iter().cloned().collect(),
+            breakpoints: self.debug.breakpoints.clone(),
+            watches: self.debug.watches.clone(),
         }
     }
 
@@ -518,6 +521,9 @@ impl App {
         }
         // Files on the command line open on top: skipping the session would lose its unsaved work.
         if let Some(s) = saved {
+            self.debug.breakpoints = s.breakpoints.clone();
+            self.debug.breakpoints.retain(|p, _| p.is_file());
+            self.debug.watches = s.watches.clone();
             if let Some(f) = s.folder.clone().filter(|f| f.is_dir()) {
                 tasks.push(self.open_folder(f));
                 for p in &s.expanded {
@@ -844,23 +850,16 @@ impl App {
             d.end = map_pos(d.end, log);
         }
         for c in log {
-            let delta = c.inserted_lines as isize - c.removed_lines as isize;
-            if delta != 0 {
-                e.bookmarks = e
-                    .bookmarks
-                    .iter()
-                    .filter_map(|l| {
-                        if *l <= c.start_line {
-                            Some(*l)
-                        } else if *l <= c.start_line + c.removed_lines {
-                            None
-                        } else {
-                            Some((*l as isize + delta) as usize)
-                        }
-                    })
-                    .collect();
+            if c.inserted_lines != c.removed_lines {
+                e.bookmarks = e.bookmarks.iter().filter_map(|l| c.map_line(*l)).collect();
             }
         }
+        if let Some(path) = e.doc.path.clone() {
+            for c in log.iter().filter(|c| c.inserted_lines != c.removed_lines) {
+                self.debug_follow_edit(&path, c);
+            }
+        }
+        let Some(e) = self.docs.get_mut(&id) else { return };
         e.git_stale = true;
         e.lsp_dirty = true;
         e.last_edit = Some(now);

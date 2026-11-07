@@ -74,6 +74,8 @@ pub fn hover(md: &str, mono: Font, view_w: f32) -> Element<'static, Message> {
             continue;
         }
         let clean = line.replace("**", "").replace('`', "").replace("\\_", "_").replace('\\', "");
+        // A heading is just the line's own emphasis here: no `###` on screen.
+        let clean = if clean.starts_with('#') { clean.trim_start_matches('#').trim_start().to_string() } else { clean };
         if clean.trim().is_empty() {
             flush(&mut items, &mut para);
         } else {
@@ -174,6 +176,13 @@ pub fn dialog(app: &App) -> Option<Element<'_, Message>> {
             .title(file_of(p))
             .body(tr("Move to Trash"))
             .primary_action(danger("Move to Trash"))
+            .secondary_action(cancel())
+            .into(),
+        DialogState::BreakpointCondition(p, line) => widget::dialog()
+            .title(format!("{}: {}:{}", tr("Breakpoint condition"), file_of(p), line + 1))
+            .body(tr("Stops only when this is true. Empty: always."))
+            .control(input("x > 10"))
+            .primary_action(primary("OK"))
             .secondary_action(cancel())
             .into(),
         DialogState::RenameSymbol => widget::dialog()

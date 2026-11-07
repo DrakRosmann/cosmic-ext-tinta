@@ -171,21 +171,32 @@ impl Highlighter {
         let mut changed = false;
         while line < total {
             if line >= self.frontier {
-                if start.elapsed() > budget {
+                // Every call gets at least one line done, however little time it was given.
+                if changed && start.elapsed() > budget {
                     break;
                 }
                 changed = true;
             }
-            if line % CHECKPOINT_EVERY == 0 && line > 0 {
-                let same = self.checkpoints[line].as_deref().is_some_and(|cp| *cp == state);
-                if same && line > self.resync_after && line >= self.frontier && line < self.known {
-                    // Nothing from here on changes.
-                    self.frontier = self.known;
-                    self.resync_after = 0;
-                    return changed;
-                }
-                if !same {
-                    self.checkpoints[line] = Some(Arc::new(state.clone()));
+            if line > 0 {
+                // An edit that added or removed lines leaves old states off the regular spacing.
+                // They still say how this text was parsed before, so they can end the work early,
+                // but past this point they must not stay: the next call backs up to whatever it
+                // finds behind the frontier, and an old state there would color the rest wrong.
+                let on_spacing = line % CHECKPOINT_EVERY == 0;
+                let ahead = line >= self.frontier;
+                if ahead || on_spacing {
+                    let same = self.checkpoints[line].as_deref().is_some_and(|cp| *cp == state);
+                    if same && line > self.resync_after && ahead && line < self.known {
+                        // Nothing from here on changes.
+                        self.frontier = self.known;
+                        self.resync_after = 0;
+                        return changed;
+                    }
+                    if !on_spacing {
+                        self.checkpoints[line] = None;
+                    } else if !same {
+                        self.checkpoints[line] = Some(Arc::new(state.clone()));
+                    }
                 }
             }
             buf.clear();
@@ -470,6 +481,68 @@ mod tests {
         run(&mut h, &r);
         assert!(!h.is_noncode(3000, 0));
         assert!(h.is_noncode(5, 0));
+    }
+
+    #[test]
+    fn an_edit_that_adds_lines_survives_being_parsed_in_slices() {
+        // The way a big file gets parsed: a bit per frame, so each call resumes from a saved state.
+        let mut src = String::from("/*\n");
+        for i in 0..1500 {
+            src.push_str(&format!("texto {i}\n"));
+        }
+        src.push_str("*/\nfn x() {}\n");
+        let mut r = Rope::from_str(&src);
+        let mut h = hl("Rust");
+        run(&mut h, &r);
+        assert!(h.is_noncode(1000, 0));
+        // Closing the comment near the top, with a line added, shifts every saved state by one.
+        let at = r.line_to_char(10);
+        r.insert(at, "*/\n");
+        h.on_change(10, 0, 1);
+        let mut calls = 0;
+        while !h.is_done(r.len_lines()) {
+            h.advance(&r, Duration::ZERO);
+            calls += 1;
+            assert!(calls < 5000, "every call makes progress");
+        }
+        for line in [11, 12, 100, 500, 1000, 1500] {
+            assert!(!h.is_noncode(line, 0), "line {line} is out of the comment now");
+        }
+        assert!(h.is_noncode(5, 0));
+        // And the other way: opening one, with lines taken away.
+        let (a, b) = (r.line_to_char(10), r.line_to_char(11));
+        r.remove(a..b);
+        h.on_change(10, 1, 0);
+        while !h.is_done(r.len_lines()) {
+            h.advance(&r, Duration::ZERO);
+        }
+        for line in [11, 100, 500, 1000] {
+            assert!(h.is_noncode(line, 0), "line {line} is back in the comment");
+        }
+    }
+
+    #[test]
+    fn adding_a_line_still_stops_early_when_nothing_else_changes() {
+        let mut src = String::new();
+        for i in 0..50_000 {
+            src.push_str(&format!("let x{i} = {i};\n"));
+        }
+        let mut r = Rope::from_str(&src);
+        let mut h = hl("Rust");
+        run(&mut h, &r);
+        let at = r.line_to_char(1000);
+        r.insert(at, "let novo = 1;\n");
+        h.on_change(1000, 0, 1);
+        h.advance(&r, Duration::from_secs(30));
+        assert!(h.is_done(r.len_lines()));
+        assert!(h.frontier() >= r.len_lines() - 1);
+        // One call, and it didn't take anything like parsing 49 thousand lines would.
+        let t = Instant::now();
+        let at = r.line_to_char(2000);
+        r.insert(at, "let outro = 2;\n");
+        h.on_change(2000, 0, 1);
+        h.advance(&r, Duration::from_secs(30));
+        assert!(t.elapsed() < Duration::from_millis(400), "{:?}", t.elapsed());
     }
 
     #[test]

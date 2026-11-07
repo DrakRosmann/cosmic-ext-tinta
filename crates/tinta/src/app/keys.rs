@@ -156,6 +156,10 @@ impl App {
         if self.palette.is_some() {
             return self.palette_key(&ev);
         }
+        // F11 steps in while debugging, as everywhere else, and is full screen the rest of the time.
+        if ev.name == "f11" && ev.mods.is_empty() && self.debug.is_live() {
+            return self.run(tinta_core::keymap::Command::StepInto);
+        }
         if let Some(t) = self.vim_on_key(&ev) {
             return t;
         }

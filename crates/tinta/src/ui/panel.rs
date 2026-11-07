@@ -29,6 +29,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let problems = if count > 0 { format!("{} ({count})", tr("Problems")) } else { tr("Problems").to_string() };
     header = header.push(tab_btn(problems, current == PanelView::Problems, Message::PanelShow(PanelView::Problems)));
     header = header.push(tab_btn(tr("Output").to_string(), current == PanelView::Output, Message::PanelShow(PanelView::Output)));
+    header = header.push(tab_btn(tr("Debug Console").to_string(), current == PanelView::Debug, Message::PanelShow(PanelView::Debug)));
     if current == PanelView::Terminal {
         header = header.push(widget::Space::new().width(Length::Fixed(14.0)));
         for (i, s) in app.terms.iter().enumerate() {
@@ -63,6 +64,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         PanelView::Tasks => tasks_view(app),
         PanelView::Problems => problems_view(app),
         PanelView::Output => output_view(app),
+        PanelView::Debug => super::debug_view::console(app),
     };
     column::with_children(vec![container(header).padding([2, 8]).into(), container(body).width(Length::Fill).height(Length::Fill).into()]).into()
 }

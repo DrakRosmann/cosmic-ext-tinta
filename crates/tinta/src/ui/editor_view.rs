@@ -20,7 +20,8 @@ use tinta_core::lsp::Severity;
 use tinta_core::settings::{CursorStyle, LineNumbers, Settings, Whitespace};
 
 const FOLD_W: f32 = 16.0;
-const MARK_W: f32 = 8.0;
+/// Left of the line numbers: git's marks, and where breakpoints go.
+const MARK_W: f32 = 22.0;
 const MINIMAP_W: f32 = 84.0;
 const SCROLLBAR_W: f32 = 12.0;
 const MM_LINE_H: f32 = 3.0;
@@ -37,6 +38,7 @@ pub enum EditorEvent {
     Scroll { dx: f32, dy: f32 },
     ScrollTo { y: f32 },
     FoldToggle { row: usize },
+    BreakpointToggle { row: usize },
     GutterSelect { row: usize, extend: bool },
     GutterDrag { row: usize },
     StickyJump { line: usize },
@@ -184,6 +186,9 @@ pub struct EditorView<'a, Message> {
     pub focused: bool,
     pub current_match: Option<usize>,
     pub inline_blame: Option<&'a str>,
+    pub breakpoints: &'a [tinta_core::dap::Breakpoint],
+    /// Where the debugger stopped. The bool: the innermost frame.
+    pub exec_line: Option<(usize, bool)>,
     pub cursor_style: CursorStyle,
     pub on_event: Box<dyn Fn(EditorEvent) -> Message + 'a>,
 }
@@ -212,6 +217,7 @@ struct State {
     hover_sent: bool,
     mods: Modifiers,
     last_cursor: Point,
+    in_marks: bool,
     ime_open: bool,
 }
 
@@ -230,6 +236,7 @@ impl Default for State {
             hover_sent: false,
             mods: Modifiers::default(),
             last_cursor: Point::ORIGIN,
+            in_marks: false,
             ime_open: false,
         }
     }
@@ -717,7 +724,9 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for EditorView<'a
                     if *button != mouse::Button::Left {
                         return;
                     }
-                    if self.settings.folding && lx >= g.gutter_w - FOLD_W {
+                    if lx < MARK_W {
+                        shell.publish((self.on_event)(EditorEvent::BreakpointToggle { row }));
+                    } else if self.settings.folding && lx >= g.gutter_w - FOLD_W {
                         shell.publish((self.on_event)(EditorEvent::FoldToggle { row }));
                     } else {
                         state.drag = DragKind::Gutter;
@@ -745,6 +754,12 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for EditorView<'a
                 shell.publish((self.on_event)(EditorEvent::Press { row, vcol, clicks, mods: state.mods, button: press }));
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // The faint dot that says a click puts a breakpoint here.
+                let in_marks = pos.is_some_and(|p| p.x - bounds.x < MARK_W);
+                if in_marks || state.in_marks {
+                    shell.request_redraw();
+                }
+                state.in_marks = in_marks;
                 let Some(p) = pos else { return };
                 state.last_cursor = p;
                 let m = self.metrics;
@@ -878,11 +893,12 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for EditorView<'a
         theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
+        let hover = cursor.position_over(bounds);
         let pal = Palette::from_theme(theme);
         let m = self.metrics;
         let m = Metrics { cell_w: if state.cell_w > 0.0 { state.cell_w } else { m.cell_w }, ..m };
@@ -894,15 +910,17 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for EditorView<'a
             focused: self.focused,
             current_match: self.current_match,
             inline_blame: self.inline_blame,
+            breakpoints: self.breakpoints,
+            exec_line: self.exec_line,
             cursor_style: self.cursor_style,
             on_event: Box::new(|_| unreachable!("drawing publishes nothing")),
         };
-        view.paint(state, r, bounds, &pal);
+        view.paint(state, r, bounds, &pal, hover);
     }
 }
 
 impl<Message: Clone> EditorView<'_, Message> {
-    fn paint(&self, state: &State, r: &mut Renderer, bounds: Rectangle, pal: &Palette) {
+    fn paint(&self, state: &State, r: &mut Renderer, bounds: Rectangle, pal: &Palette, hover: Option<Point>) {
         let m = self.metrics;
         let doc = &self.entry.doc;
         let tabw = doc.indent.width.max(1);
@@ -930,6 +948,13 @@ impl<Message: Clone> EditorView<'_, Message> {
                 let line = row.line as usize;
                 let y = y_at(row_i);
                 let lstart = doc.line_start(line);
+                // Where the debugger stopped.
+                if let Some((l, top)) = self.exec_line
+                    && l == line
+                {
+                    let c = if top { pal.warning } else { pal.accent };
+                    quad(r, Rectangle::new(Point::new(text_rect.x, y), Size::new(text_rect.width, m.line_h)), alpha(c, 0.2));
+                }
                 // Current line.
                 if s.highlight_current_line && tab.cursors.iter().any(|c| c.is_empty() && doc.char_to_line(c.head) == line) {
                     quad(r, Rectangle::new(Point::new(text_rect.x, y), Size::new(text_rect.width, m.line_h)), pal.current_line);
@@ -1065,7 +1090,7 @@ impl<Message: Clone> EditorView<'_, Message> {
             for row_i in first_row..last_row {
                 let row = tab.map.row(doc, row_i);
                 let y = y_at(row_i);
-                self.draw_gutter_row(r, row, y, bounds, &g, pal, primary_line, &selected, tabw);
+                self.draw_gutter_row(r, row, y, bounds, &g, pal, primary_line, &selected, tabw, hover);
             }
         });
 
@@ -1115,6 +1140,7 @@ impl<Message: Clone> EditorView<'_, Message> {
         primary_line: usize,
         selected: &[usize],
         tabw: usize,
+        hover: Option<Point>,
     ) {
         let m = self.metrics;
         let doc = &self.entry.doc;
@@ -1146,7 +1172,36 @@ impl<Message: Clone> EditorView<'_, Message> {
             }
         }
         if row.start == 0 && self.entry.bookmarks.contains(&line) {
-            rquad(r, Rectangle::new(Point::new(bounds.x + MARK_W - 3.0, y + m.line_h / 2.0 - 4.0), Size::new(8.0, 8.0)), pal.accent, 4.0);
+            rquad(r, Rectangle::new(Point::new(bounds.x + 10.0, y + m.line_h / 2.0 - 4.0), Size::new(8.0, 8.0)), pal.accent, 4.0);
+        }
+        if row.start == 0 {
+            let dot = Rectangle::new(Point::new(bounds.x + 8.0, y + m.line_h / 2.0 - 6.0), Size::new(12.0, 12.0));
+            let hole = Rectangle::new(Point::new(dot.x + 3.0, dot.y + 3.0), Size::new(6.0, 6.0));
+            if let Some(b) = self.breakpoints.iter().find(|b| b.line == line) {
+                rquad(r, dot, if b.enabled { pal.error } else { pal.gutter }, 6.0);
+                if !b.enabled || b.state == tinta_core::dap::BpState::Pending {
+                    // Hollow: it won't stop anything right now.
+                    rquad(r, hole, pal.bg, 3.0);
+                } else if b.condition.is_some() {
+                    // A little `=`, as a condition's mark.
+                    quad(r, Rectangle::new(Point::new(dot.x + 3.0, dot.y + 3.5), Size::new(6.0, 1.5)), pal.bg);
+                    quad(r, Rectangle::new(Point::new(dot.x + 3.0, dot.y + 7.0), Size::new(6.0, 1.5)), pal.bg);
+                }
+            } else if hover.is_some_and(|p| p.x - bounds.x < MARK_W && p.y >= y && p.y < y + m.line_h) {
+                rquad(r, dot, alpha(pal.error, 0.35), 6.0);
+            }
+            // The arrow for where execution is, drawn over a breakpoint on the same line.
+            if let Some((l, top)) = self.exec_line
+                && l == line
+            {
+                let c = if top { pal.warning } else { pal.accent };
+                let cy = y + m.line_h / 2.0;
+                for i in 0..6 {
+                    let f = i as f32;
+                    let h = 11.0 - f * 2.0;
+                    quad(r, Rectangle::new(Point::new(bounds.x + 10.0 + f * 1.4, cy - h / 2.0), Size::new(1.5, h)), c);
+                }
+            }
         }
         // Fold arrows, drawn as small triangles out of quads so no font is needed.
         if s.folding && row.start == 0 {
