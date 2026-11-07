@@ -886,6 +886,87 @@ fn vim_on_a_read_only_buffer_moves_but_does_not_edit() {
     ui.cmd(Command::ToggleVim);
 }
 
+#[test]
+fn side_by_side_diff_opens_scrolls_and_jumps() {
+    let dir = temp_dir("diff");
+    let p = dir.join("a.rs");
+    let old: String = (0..200).map(|i| format!("linha {i}\n")).collect();
+    std::fs::write(&p, &old).unwrap();
+    let mut ui = Ui::new(vec![p.clone()]);
+    ui.app.jump_to(150, 0);
+    ui.typed("mudou ");
+    ui.app.jump_to(5, 0);
+    ui.typed("cedo ");
+    ui.cmd(Command::CompareSaved);
+    let tab = ui.app.active_tab_id().unwrap();
+    assert_eq!(ui.app.tabs[&tab].kind, crate::state::TabKind::Diff);
+    let hunks = ui.app.tabs[&tab].diff.as_ref().unwrap().hunks.clone();
+    assert_eq!(hunks, vec![5, 150]);
+    ui.frame();
+    // The second change, then wrapping around to the first.
+    ui.cmd(Command::NextChange);
+    let y = ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y;
+    assert!(y > 100.0 * ui.app.metrics.line_h, "{y}");
+    ui.cmd(Command::NextChange);
+    assert_eq!(ui.app.tabs[&tab].diff.as_ref().unwrap().current, Some(0));
+    // Keys scroll, and don't try to edit anything.
+    let before = ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y;
+    ui.key("down", Modifiers::empty(), None);
+    assert_eq!(ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y, before + ui.app.metrics.line_h);
+    ui.typed("x");
+    ui.key("end", Modifiers::empty(), None);
+    ui.frame();
+    // Wheel, through the real widget.
+    ui.key("home", Modifiers::empty(), None);
+    ui.move_to(Point::new(SIZE.width - 200.0, 300.0));
+    ui.send(vec![Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -2.0 } })]);
+    assert!(ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y > 0.0);
+    // Double click on the new side goes to the file, at that line.
+    let row_y = 300.0;
+    let p2 = Point::new(SIZE.width - 200.0, row_y);
+    ui.click_at(p2);
+    ui.click_at(p2);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(t.kind, crate::state::TabKind::Text);
+    assert_eq!(e.doc.file_name(), "a.rs");
+    assert!(e.doc.char_to_line(t.cursors.head()) > 0);
+    // Comparing again replaces the view instead of piling up tabs.
+    let n = ui.app.tabs.len();
+    ui.cmd(Command::CompareSaved);
+    ui.frame();
+    assert_eq!(ui.app.tabs.len(), n);
+}
+
+#[test]
+fn source_control_opens_diffs_against_the_right_versions() {
+    use tinta_core::git as g;
+    let dir = temp_dir("gitdiff");
+    let run = |args: &[&str]| {
+        std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "t@example.com"]);
+    run(&["config", "user.name", "T"]);
+    std::fs::write(dir.join("a.txt"), "um\ndois\n").unwrap();
+    g::stage(&dir, "a.txt").unwrap();
+    g::commit(&dir, "x").unwrap();
+    std::fs::write(dir.join("a.txt"), "um\nDOIS\n").unwrap();
+    g::stage(&dir, "a.txt").unwrap();
+    std::fs::write(dir.join("a.txt"), "um\nDOIS\ntres\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    let _ = ui.app.open_git_diff(dir.clone(), "a.txt".into(), true);
+    ui.frame();
+    let d = ui.app.active().unwrap().0.diff.as_ref().unwrap();
+    assert_eq!(d.left.rope.to_string(), "um\ndois\n");
+    assert_eq!(d.right.rope.to_string(), "um\nDOIS\n");
+    let _ = ui.app.open_git_diff(dir.clone(), "a.txt".into(), false);
+    ui.frame();
+    let d = ui.app.active().unwrap().0.diff.as_ref().unwrap();
+    assert_eq!(d.left.rope.to_string(), "um\nDOIS\n");
+    assert_eq!(d.right.rope.to_string(), "um\nDOIS\ntres\n");
+    assert_eq!((d.added, d.removed), (1, 0));
+}
+
 /// Menus are surfaces of their own, and closing one asks the same question as closing the window.
 #[test]
 fn a_build_task_runs_and_its_errors_mark_the_file() {

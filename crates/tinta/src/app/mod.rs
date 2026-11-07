@@ -1,6 +1,7 @@
 //! The application: all state lives here, every change goes through `update`.
 
 mod commands;
+mod diff;
 mod docs;
 mod editing;
 mod explorer;
@@ -178,6 +179,7 @@ pub enum Message {
     InputFocus(bool),
     Cmd(Command),
     Editor(TabId, EditorEvent),
+    Diff(TabId, ui::diff_view::DiffEvent),
     TabActivate(usize, segmented_button::Entity),
     TabClose(usize, segmented_button::Entity),
     SidebarShow(SidebarView),
@@ -553,6 +555,13 @@ impl App {
 
     pub fn needs_frame_tick(&self) -> bool {
         for g in &self.groups {
+            if let Some(d) = g.active_tab().and_then(|t| self.tabs.get(&t)).and_then(|t| t.diff.as_ref()) {
+                for side in [&d.left, &d.right] {
+                    if side.highlighter.as_ref().is_some_and(|h| !h.is_done(side.len_lines())) {
+                        return true;
+                    }
+                }
+            }
             if let Some(t) = g.active_tab().and_then(|t| self.tabs.get(&t))
                 && let Some(e) = self.docs.get(&t.doc)
                 && let Some(h) = &e.doc.highlighter
@@ -589,6 +598,7 @@ impl App {
             }
             Message::Cmd(c) => self.run(c),
             Message::Editor(tab, ev) => self.on_editor_event(tab, ev),
+            Message::Diff(tab, ev) => self.on_diff_event(tab, ev),
             Message::TabActivate(g, e) => {
                 self.active_group = g.min(self.groups.len() - 1);
                 self.groups[self.active_group].model.activate(e);
@@ -821,6 +831,11 @@ impl App {
         self.syntax_theme = tinta_core::syntax::theme_by_name(&name, dark);
         for e in self.docs.values_mut() {
             docs::attach_language(&mut e.doc, self.syntax_theme.clone());
+        }
+        for d in self.tabs.values_mut().filter_map(|t| t.diff.as_deref_mut()) {
+            for side in [&mut d.left, &mut d.right] {
+                side.highlighter = tinta_core::syntax::Highlighter::new(&side.language.name, self.syntax_theme.clone());
+            }
         }
     }
 

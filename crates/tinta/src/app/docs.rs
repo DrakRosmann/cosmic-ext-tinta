@@ -73,6 +73,9 @@ impl App {
             s.push_str(&format!("{} · {}", tr("Rendered preview"), e.doc.file_name()));
             return s;
         }
+        if t.kind == TabKind::Diff {
+            s.push_str("⇄ ");
+        }
         if e.doc.is_dirty() && !e.is_read_only_view {
             s.push_str("● ");
         }
@@ -911,6 +914,16 @@ impl App {
     }
 
     pub fn advance_highlighting(&mut self, budget: Duration) {
+        let shown_diffs: Vec<TabId> = self.groups.iter().filter_map(Group::active_tab).collect();
+        for id in shown_diffs {
+            if let Some(d) = self.tabs.get_mut(&id).and_then(|t| t.diff.as_deref_mut()) {
+                for side in [&mut d.left, &mut d.right] {
+                    if let Some(h) = &mut side.highlighter {
+                        h.advance(&side.rope, budget);
+                    }
+                }
+            }
+        }
         let visible: Vec<DocId> = self.groups.iter().filter_map(|g| g.active_tab().and_then(|t| self.tabs.get(&t)).map(|t| t.doc)).collect();
         for id in visible {
             if let Some(e) = self.docs.get_mut(&id)

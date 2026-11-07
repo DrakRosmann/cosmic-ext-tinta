@@ -82,6 +82,11 @@ pub fn file_at_head(root: &Path, rel: &str) -> Option<String> {
     git(root, &["show", &format!("HEAD:{rel}")]).ok()
 }
 
+/// What's staged for a file. Falls back on nothing for a file git doesn't know yet.
+pub fn file_at_index(root: &Path, rel: &str) -> Option<String> {
+    git(root, &["show", &format!(":{rel}")]).ok()
+}
+
 pub fn stage(root: &Path, rel: &str) -> Result<(), String> {
     git(root, &["add", "--", rel]).map(|_| ())
 }

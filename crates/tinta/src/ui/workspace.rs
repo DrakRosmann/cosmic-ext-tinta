@@ -212,6 +212,15 @@ fn group_view(app: &App, g: usize) -> Element<'_, Message> {
         let blocks = tab.preview_cache.as_ref().map_or(EMPTY, |(_, b)| b.as_slice());
         return col.push(markdown::view(blocks, app.metrics.font)).into();
     }
+    if let Some(data) = &tab.diff {
+        let view: Element<'_, Message> = super::diff_view::DiffView {
+            data,
+            metrics: app.metrics,
+            on_event: Box::new(move |ev| Message::Diff(tab_id, ev)),
+        }
+        .into();
+        return col.push(view).into();
+    }
     let blame = entry.blame.as_ref().filter(|_| app.settings.inline_blame && active_group).map(|(_, s)| s.as_str()).filter(|s| !s.is_empty());
     let editor: Element<'_, Message> = EditorView {
         entry,

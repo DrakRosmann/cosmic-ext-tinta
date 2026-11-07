@@ -266,6 +266,9 @@ impl App {
 
     /// Keys with a fixed meaning in the text: the ones not worth remapping.
     fn editor_key(&mut self, ev: &KeyEv) -> Task<Message> {
+        if !ev.mods.control() && !ev.mods.alt() && self.diff_key(&ev.name) {
+            return Task::none();
+        }
         let m = ev.mods;
         let (ctrl, shift, alt) = (m.control(), m.shift(), m.alt());
         let motion = match (ev.name.as_str(), ctrl, alt) {

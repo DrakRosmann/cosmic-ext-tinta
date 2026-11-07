@@ -303,7 +303,7 @@ struct RowCtx {
     clip: Rectangle,
 }
 
-fn text_primitive(content: String, m: &Metrics, font: Font) -> adv_text::Text<String, Font> {
+pub(crate) fn text_primitive(content: String, m: &Metrics, font: Font) -> adv_text::Text<String, Font> {
     adv_text::Text {
         content,
         bounds: Size::new(f32::INFINITY, m.line_h),

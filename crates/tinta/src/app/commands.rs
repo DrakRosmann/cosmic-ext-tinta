@@ -1,7 +1,6 @@
 //! What each command does.
 
 use super::{App, BoolSetting, DialogMsg, DialogState, Focus, Message, PaletteMode, PanelView, SettingMsg, SidebarView};
-use crate::i18n::tr;
 use crate::state::{TabId, TabKind};
 use cosmic::app::Task;
 use std::path::PathBuf;
@@ -518,6 +517,9 @@ impl App {
     }
 
     fn change_step(&mut self, forward: bool) {
+        if self.diff_step(forward) {
+            return;
+        }
         let Some((t, e)) = self.active() else { return };
         let l = e.doc.char_to_line(t.cursors.head());
         let h = if forward { e.git_diff.next_hunk(l) } else { e.git_diff.prev_hunk(l) };
@@ -962,16 +964,6 @@ impl App {
         }
         self.reload_explorer();
         Task::none()
-    }
-
-    fn compare_with_saved(&mut self) -> Task<Message> {
-        let Some((_, e)) = self.active() else { return Task::none() };
-        let Some(p) = e.doc.path.clone() else { return Task::none() };
-        let saved = std::fs::read_to_string(&p).unwrap_or_default();
-        let now = e.doc.rope.to_string();
-        let name = e.doc.file_name();
-        let text = core_git::unified(&format!("{name} (saved)"), &name, &saved, &now);
-        self.open_generated(format!("{}: {name}", tr("Changes in")), &text, "Diff")
     }
 }
 

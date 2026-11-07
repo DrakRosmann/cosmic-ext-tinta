@@ -128,8 +128,8 @@ commands! {
     NextBookmark, "bookmark.next", "Next Bookmark", "Próximo marcador", ["f8"];
     PrevBookmark, "bookmark.prev", "Previous Bookmark", "Marcador anterior", ["shift+f8"];
     ClearBookmarks, "bookmark.clear", "Clear Bookmarks", "Limpar marcadores", [];
-    NextChange, "git.nextChange", "Next Change", "Próxima alteração", ["alt+f3"];
-    PrevChange, "git.prevChange", "Previous Change", "Alteração anterior", ["shift+alt+f3"];
+    NextChange, "git.nextChange", "Next Change", "Próxima alteração", ["alt+f3", "f7"];
+    PrevChange, "git.prevChange", "Previous Change", "Alteração anterior", ["shift+alt+f3", "shift+f7"];
     RevertHunk, "git.revertHunk", "Revert Change Under Cursor", "Reverter alteração sob o cursor", [];
     // Folding
     Fold, "fold.fold", "Fold", "Dobrar", ["ctrl+shift+["];

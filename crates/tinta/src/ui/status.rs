@@ -61,7 +61,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
     r = r.push(widget::Space::new().width(Length::Fill));
 
     let focus_terminal = app.focus == Focus::Terminal && app.panel == Some(PanelView::Terminal);
-    if let Some((t, e)) = app.active()
+    if let Some(d) = app.active().and_then(|(t, _)| t.diff.as_ref()) {
+        r = r.push(container(text(format!("+{} −{}", d.added, d.removed)).size(12)).padding([0, 7]));
+        let pos = match d.current {
+            Some(c) => format!("{} {} {}", c + 1, tr("of"), d.hunks.len()),
+            None => format!("{}", d.hunks.len()),
+        };
+        r = r.push(item(pos, Message::Cmd(Command::NextChange)));
+        r = r.push(item(d.right.language.name.clone(), Message::Noop));
+    } else if let Some((t, e)) = app.active()
         && !focus_terminal
     {
         let d = &e.doc;

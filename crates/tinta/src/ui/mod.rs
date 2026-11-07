@@ -1,3 +1,4 @@
+pub mod diff_view;
 pub mod editor_view;
 pub mod fresh;
 pub mod icons;
