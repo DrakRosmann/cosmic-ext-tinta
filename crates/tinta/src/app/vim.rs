@@ -66,10 +66,12 @@ impl App {
         let id = self.active_tab_id()?;
         let page_rows = self.page_rows();
         let opts = self.edit_opts();
+        let line_h = self.metrics.line_h.max(1.0);
         let App { tabs, docs, vim, .. } = self;
         let t = tabs.get_mut(&id)?;
         let e = docs.get_mut(&t.doc)?;
-        let mut ctx = Ctx { doc: &mut e.doc, cur: &mut t.cursors, map: &t.map, page_rows, opts };
+        let first_row = (t.scroll_y / line_h).ceil() as usize;
+        let mut ctx = Ctx { doc: &mut e.doc, cur: &mut t.cursors, map: &t.map, page_rows, first_row, opts };
         let out = f(vim, &mut ctx);
         self.edit_tab = Some(id);
         Some(out)

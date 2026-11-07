@@ -101,6 +101,8 @@ pub struct Ctx<'a> {
     pub cur: &'a mut Cursors,
     pub map: &'a DisplayMap,
     pub page_rows: usize,
+    /// The first row on screen, for H, M and L.
+    pub first_row: usize,
     pub opts: EditOpts,
 }
 
@@ -636,7 +638,18 @@ impl Vim {
                 let l = if has_count { (n - 1).min(last) } else { last };
                 (first_nonblank(doc, l), Kind::Line)
             }
-            'H' | 'M' | 'L' => return None,
+            'H' | 'M' | 'L' => {
+                let rows = ctx.map.row_count(doc).max(1);
+                let top = ctx.first_row;
+                let bottom = (top + ctx.page_rows.max(1) - 1).min(rows - 1);
+                let row = match c {
+                    'H' => (top + n - 1).min(bottom),
+                    'M' => top + (bottom - top) / 2,
+                    _ => bottom.saturating_sub(n - 1).max(top),
+                };
+                let target = (ctx.map.row(doc, row).line as usize).min(last_text_line(doc));
+                (first_nonblank(doc, target), Kind::Line)
+            }
             '{' | '}' => {
                 let mut l = line as isize;
                 let step = if c == '}' { 1isize } else { -1 };
@@ -1927,6 +1940,7 @@ mod tests {
         cur: Cursors,
         vim: Vim,
         actions: Vec<Action>,
+        first_row: usize,
     }
 
     impl T {
@@ -1936,13 +1950,13 @@ mod tests {
             let text: String = src.chars().filter(|c| *c != '|').collect();
             let mut doc = Document::new(&text);
             doc.indent = crate::buffer::Indent { spaces: true, width: 4 };
-            Self { doc, cur: Cursors::single(Selection::cursor(at)), vim: Vim::new(), actions: Vec::new() }
+            Self { doc, cur: Cursors::single(Selection::cursor(at)), vim: Vim::new(), actions: Vec::new(), first_row: 0 }
         }
 
         fn press(&mut self, key: Key) {
             let map = DisplayMap::new(&self.doc, &Folds::default(), None, 4);
             let opts = EditOpts { auto_pairs: false, auto_indent: true, surround: false };
-            let mut ctx = Ctx { doc: &mut self.doc, cur: &mut self.cur, map: &map, page_rows: 10, opts };
+            let mut ctx = Ctx { doc: &mut self.doc, cur: &mut self.cur, map: &map, page_rows: 10, first_row: self.first_row, opts };
             let was_insert = self.vim.is_insert();
             let out = self.vim.key(&mut ctx, key.clone());
             self.actions.extend(out.actions);
@@ -1990,7 +2004,7 @@ mod tests {
 
         fn ex(&mut self, prefix: char, s: &str) -> Vec<Action> {
             let map = DisplayMap::new(&self.doc, &Folds::default(), None, 4);
-            let mut ctx = Ctx { doc: &mut self.doc, cur: &mut self.cur, map: &map, page_rows: 10, opts: EditOpts::default() };
+            let mut ctx = Ctx { doc: &mut self.doc, cur: &mut self.cur, map: &map, page_rows: 10, first_row: 0, opts: EditOpts::default() };
             self.vim.command_line(&mut ctx, prefix, s)
         }
 
@@ -2266,6 +2280,33 @@ mod tests {
     }
 
     #[test]
+    fn top_middle_and_bottom_of_the_screen() {
+        let src = format!("|{}", "  x\n".repeat(50));
+        let line = |t: &T| t.doc.char_to_line(t.cur.head());
+        let mut t = T::new(&src);
+        t.first_row = 20;
+        t.keys("L");
+        assert_eq!(line(&t), 29);
+        assert_eq!(t.doc.line_col(t.cur.head()).1, 2, "first non-blank");
+        t.keys("H");
+        assert_eq!(line(&t), 20);
+        t.keys("M");
+        assert_eq!(line(&t), 24);
+        t.keys("3H");
+        assert_eq!(line(&t), 22);
+        t.keys("2L");
+        assert_eq!(line(&t), 28);
+        // An operator takes the whole lines between here and there.
+        let mut t = T::new(&src);
+        t.keys("dL");
+        assert_eq!(t.doc.len_lines(), 41);
+        // A short file ends before the screen does.
+        let mut t = T::new("|a\nb\nc\n");
+        t.keys("L");
+        assert_eq!(line(&t), 2);
+    }
+
+    #[test]
     fn search() {
         let mut t = T::new("|foo\nbar\nfoo\nbaz\nfoo\n");
         let a = t.ex('/', "foo");
@@ -2359,7 +2400,7 @@ mod tests {
     fn keys_vim_does_not_want_go_back_to_the_editor() {
         let mut t = T::new("|ab");
         let map = DisplayMap::new(&t.doc, &Folds::default(), None, 4);
-        let mut ctx = Ctx { doc: &mut t.doc, cur: &mut t.cur, map: &map, page_rows: 10, opts: EditOpts::default() };
+        let mut ctx = Ctx { doc: &mut t.doc, cur: &mut t.cur, map: &map, page_rows: 10, first_row: 0, opts: EditOpts::default() };
         assert!(!t.vim.key(&mut ctx, Key::ctrl('p')).handled, "Ctrl+P stays the file picker");
         assert!(!t.vim.key(&mut ctx, Key::ctrl('s')).handled);
         assert!(t.vim.key(&mut ctx, Key::ch('l')).handled);

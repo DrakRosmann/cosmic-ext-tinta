@@ -969,6 +969,18 @@ fn source_control_opens_diffs_against_the_right_versions() {
     assert_eq!((d.added, d.removed), (1, 0));
 }
 
+/// Compiling and starting a debugger can take a while on a slow machine.
+fn wait_long(ui: &mut Ui, mut done: impl FnMut(&App) -> bool) {
+    for _ in 0..3000 {
+        ui.frame();
+        if done(&ui.app) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting");
+}
+
 fn have_gdb_dap() -> bool {
     tinta_core::dap::resolve_adapter("gdb").is_ok() && std::process::Command::new("cc").arg("--version").output().is_ok()
 }
@@ -1020,7 +1032,7 @@ fn debugging_a_program_through_the_interface() {
     // F5 compiles it through the task panel, and stops at the breakpoint.
     ui.key("f5", Modifiers::empty(), None);
     assert_eq!(ui.app.sidebar, Some(crate::app::SidebarView::Debug));
-    wait_for(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().is_some_and(|s| !s.variable_rows().is_empty()));
+    wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().is_some_and(|s| !s.variable_rows().is_empty()));
     assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
     let loc = |ui: &Ui| ui.app.debug.session.as_ref().unwrap().exec_location().map(|(_, l, top)| (l, top));
     assert_eq!(loc(&ui), Some((5, true)));
@@ -1030,31 +1042,38 @@ fn debugging_a_program_through_the_interface() {
     // F10 steps, and the panels draw whatever comes.
     ui.key("f10", Modifiers::empty(), None);
     let value = |a: &App, path: &str| a.debug.session.as_ref()?.variable_rows().into_iter().find(|r| r.path == path).map(|r| r.value);
-    wait_for(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().unwrap().exec_location().is_some_and(|l| l.1 == 6) && value(a, "Locals/r").is_some());
+    wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().unwrap().exec_location().is_some_and(|l| l.1 == 6) && value(a, "Locals/r").is_some());
     assert_eq!(value(&ui.app, "Locals/r").as_deref(), Some("6"));
 
     // The call stack is clickable: the frame's variables and line come up.
     let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::SelectFrame(1)));
-    wait_for(&mut ui, |a| value(a, "Locals/total").is_some());
+    wait_long(&mut ui, |a| value(a, "Locals/total").is_some());
     assert_eq!(loc(&ui), Some((11, false)));
     assert_eq!(ui.head().0, 11);
 
     // Shift+F11 leaves dobro, F11 is a step in rather than full screen.
     ui.key("f11", Modifiers::empty(), None);
     assert!(!ui.app.fullscreen, "F11 steps while debugging");
-    wait_for(&mut ui, |a| a.debug.is_stopped());
+    wait_long(&mut ui, |a| a.debug.is_stopped());
 
-    // Hovering asks the debugger, not the language server.
-    assert!(ui.app.debug_hover("total", 1, 0));
+    // Hovering shows the value, from the debugger and not the language server.
+    let tab = ui.app.active_tab_id().unwrap();
+    ui.app.hover = None;
+    let _ = ui.app.update(Message::Editor(tab, crate::ui::editor_view::EditorEvent::Hover { row: 6, vcol: 11 }));
+    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 6"));
+    // Even over the right half of the letter, where the position rounds to the char after it.
+    ui.app.hover = None;
+    let _ = ui.app.update(Message::Editor(tab, crate::ui::editor_view::EditorEvent::Hover { row: 6, vcol: 12 }));
+    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 6"));
 
     // The console evaluates.
     let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Input("2 + 3".into())));
     let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Submit));
-    wait_for(&mut ui, |a| a.debug.console.iter().any(|l| l.text == "5"));
+    wait_long(&mut ui, |a| a.debug.console.iter().any(|l| l.text == "5"));
 
     // Off to the end: the program's output and its exit code come through, and the session closes.
     ui.key("f5", Modifiers::empty(), None);
-    wait_for(&mut ui, |a| a.debug.session.is_none());
+    wait_long(&mut ui, |a| a.debug.session.is_none());
     let text: Vec<_> = ui.app.debug.console.iter().map(|l| l.text.as_str()).collect();
     assert!(text.contains(&"total 10"), "{text:?}");
     assert!(text.iter().any(|l| l.ends_with(" 7")), "{text:?}");
@@ -1075,7 +1094,7 @@ fn a_failed_build_shows_its_errors_and_does_not_start_anything() {
     std::fs::write(&src, "int main(void) {\n    return nada;\n}\n").unwrap();
     let mut ui = Ui::new(vec![src.clone()]);
     ui.key("f5", Modifiers::empty(), None);
-    wait_for(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    wait_long(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
     assert_eq!(ui.app.panel, Some(crate::app::PanelView::Tasks));
     assert!(ui.app.debug.session.is_none());
     assert!(ui.app.tasks.problems.iter().any(|(p, _)| p.ends_with("ruim.c")), "{:?}", ui.app.tasks.problems);
@@ -1093,7 +1112,7 @@ fn stopping_a_session_lets_the_next_one_run_and_breakpoints_are_remembered() {
     ui.app.jump_to(5, 0);
     ui.key("f9", Modifiers::empty(), None);
     ui.key("f5", Modifiers::empty(), None);
-    wait_for(&mut ui, |a| a.debug.is_stopped());
+    wait_long(&mut ui, |a| a.debug.is_stopped());
     ui.key("f5", Modifiers::SHIFT, None);
     assert!(ui.app.debug.session.is_none());
     // A breakpoint set while nothing runs goes in with the next session.
@@ -1110,10 +1129,10 @@ fn stopping_a_session_lets_the_next_one_run_and_breakpoints_are_remembered() {
     assert!(serde_json::from_value::<tinta_core::session::Session>(v).is_ok());
     // Restart goes through a fresh session.
     ui.key("f5", Modifiers::empty(), None);
-    wait_for(&mut ui, |a| a.debug.is_stopped());
+    wait_long(&mut ui, |a| a.debug.is_stopped());
     let first = ui.app.debug.generation;
     ui.key("f5", Modifiers::CTRL | Modifiers::SHIFT, None);
-    wait_for(&mut ui, |a| a.debug.generation > first && a.debug.is_stopped());
+    wait_long(&mut ui, |a| a.debug.generation > first && a.debug.is_stopped());
     ui.key("f5", Modifiers::SHIFT, None);
 }
 

@@ -8,6 +8,10 @@ espera de um VS Code ou de um Sublime Text.
 
 ![Sugestões e problemas vindos do servidor de linguagem](assets/screenshot-lsp.png)
 
+![Depurando um programa em C: variáveis, pilha de chamadas e o que mudou em destaque](assets/screenshot-debug.png)
+
+![Diff lado a lado, com o trecho alterado em destaque](assets/screenshot-diff.png)
+
 ![O tema claro, com o editor dividido](assets/screenshot-light.png)
 
 ## O que ele faz
@@ -24,6 +28,7 @@ espera de um VS Code ou de um Sublime Text.
 - Desfazer e refazer por agrupamento, como nos editores que você já conhece
 - Snippets com pontos de parada, embutidos para as linguagens mais comuns e seus próprios em JSON
 - Teclas mortas e métodos de entrada: `á`, `ç`, `ã` no ABNT2 funcionam, CJK também
+- Modo Vim, nas configurações ou em "Alternar modo Vim" (veja abaixo)
 
 **Visualização**
 
@@ -32,7 +37,9 @@ espera de um VS Code ou de um Sublime Text.
 - 13 temas de cores, além do COSMIC, que acompanha o claro e o escuro do sistema
 - Parênteses coloridos por profundidade, ignorando strings e comentários
 - Minimapa, guias de indentação, rolagem aderente, réguas, espaços visíveis
-- Dobra de código, quebra de linha, números de linha absolutos ou relativos
+- Dobra de código, quebra de linha, números de linha absolutos ou relativos, a partir da árvore de
+  sintaxe (tree-sitter) em Rust, Python, C, C++, JavaScript, TypeScript, Go, Java, Bash, JSON, HTML
+  e CSS, e da indentação nas outras linguagens
 - Destaque do par do parêntese e das ocorrências da palavra sob o cursor
 - Breadcrumbs, divisão em vários grupos, modo zen, tela cheia
 - Pré-visualização de Markdown ao lado do texto
@@ -47,7 +54,8 @@ espera de um VS Code ou de um Sublime Text.
 **Busca**
 
 - Localizar e substituir com expressão regular, palavra inteira, maiúsculas, dentro da seleção
-- Busca na pasta inteira, respeitando o `.gitignore`, com filtros de arquivos e substituição
+- Busca na pasta inteira, respeitando o `.gitignore`, com filtros de arquivos e substituição, que
+  alcança todas as ocorrências mesmo quando a lista na tela para em um limite
 
 **Inteligência de código (LSP)**
 
@@ -60,18 +68,62 @@ linguagens.
 - Ir para definição, declaração, implementação e tipo; localizar referências
 - Renomear símbolo em todos os arquivos, formatar, correções rápidas
 - Problemas sublinhados, com a mensagem no fim da linha e um painel com todos
+- Envio parcial: o servidor recebe só o trecho alterado, se aceitar isso
+
+**Depurador (DAP)**
+
+`F5` compila e roda, e pronto. Usa o `gdb` 14 ou mais novo, o `lldb-dap`, o `debugpy` ou o `dlv`,
+os que estiverem instalados. O gdb e o debugpy têm testes contra programas de verdade; o lldb-dap e
+o dlv usam o mesmo código, mas ainda não foram experimentados.
+
+- Breakpoints com um clique à esquerda dos números de linha ou `F9`, condicionais com `Shift+F9`.
+  Acompanham o código quando o arquivo muda e continuam lá da próxima vez
+- Variáveis em árvore, com o que mudou desde a última parada em destaque, e expressões observadas
+- Pilha de chamadas e threads: clicar em um nível mostra aquele nível
+- Passar o mouse sobre um nome, com o programa pausado, mostra o valor
+- Console com a saída do programa, que avalia expressões; `-exec` manda um comando ao depurador
+- Um erro de compilação aparece no código como qualquer outro, e a sessão não começa
+
+Sem configuração, ele compila o arquivo aberto (C e C++), usa `cargo`, `make` ou `cmake`, ou roda o
+arquivo (Python e Go). Para o resto, ou para passar argumentos, há o `.tinta/launch.json`, que aceita
+também o formato do VS Code. O comando "Editar launch.json" cria um modelo:
+
+```jsonc
+[
+  {
+    "name": "Servidor",
+    "type": "gdb",                 // gdb, lldb, python ou go
+    "build": "make -j8",           // opcional: a sessão só começa se der certo
+    "program": "${workspaceFolder}/build/servidor",
+    "args": ["--porta", "8080"],
+    "cwd": "${workspaceFolder}",
+    "env": { "LOG": "debug" },
+    "stopOnEntry": false
+  }
+]
+```
+
+**Tarefas de build**
+
+- `Ctrl+Shift+B` roda o build; a paleta lista o que o projeto oferece: cargo, make, just, cmake,
+  meson, go, npm, pytest e o seu `.tinta/tasks.json`
+- Os erros aparecem no código e no painel de problemas, e `F6` e `Shift+F6` pulam de um para o outro
+- No terminal, `Ctrl+clique` abre `arquivo:linha` e links
 
 **Git**
 
 - Marcas na margem e no mapa da barra de rolagem, próxima alteração, reverter um trecho
 - Preparar, descartar, commit, push, pull, fetch e troca de branch
-- Diff de cada arquivo, histórico, `git blame` na linha atual
+- Diff lado a lado, com rolagem conjunta, cor de sintaxe e o trecho alterado em destaque. `F7` e
+  `Shift+F7` pulam entre as alterações, e um clique duplo no lado novo abre o arquivo naquela linha
+- Histórico e `git blame` na linha atual
 
 **E o resto**
 
 - Terminal integrado (o emulador do Alacritty), com vários terminais, seleção e cores
 - Árvore de arquivos com menu de contexto, ícones do tema e cores do git
 - Sessão restaurada ao abrir, e texto não salvo guardado entre execuções (o _hot exit_ do VS Code)
+- Uma janela só: `tinta arquivo` manda o arquivo para a janela que já está aberta
 - Salvamento atômico, salvar automaticamente, formatar ao salvar, limpar espaços no fim das linhas
 - Codificações (UTF-8, UTF-16, Windows-1252, Shift JIS…) e fins de linha detectados e preservados
 - Recarrega arquivos que mudaram no disco e pergunta se você tem alterações não salvas
@@ -160,15 +212,41 @@ A lista completa de atalhos está em `Ctrl+K Ctrl+S`, e os identificadores dos c
 | `Ctrl+Espaço` | Sugestões |
 | `Alt+Z` | Quebra de linha |
 | `Ctrl+Shift+V` | Pré-visualizar Markdown |
+| `Ctrl+Shift+B` | Rodar o build |
+| `F5` / `Shift+F5` | Iniciar ou continuar / parar a depuração |
+| `F9` / `Shift+F9` | Breakpoint / breakpoint condicional |
+| `F10` / `F11` / `Shift+F11` | Próxima linha / entrar na função / sair dela |
+| `F7` / `Shift+F7` | Próxima alteração / anterior |
+| `Ctrl+Shift+Y` | Console de depuração |
+
+`F11` é tela cheia, exceto durante uma sessão de depuração. "Ordenar linhas" não tem mais atalho:
+`F9` agora é o breakpoint.
+
+### Modo Vim
+
+Os modos normal, inserir, substituir e visual (de caracteres, de linhas e em bloco), com contagens:
+
+- Movimentos: `h j k l w b e W B E ge 0 ^ $ gg G f F t T ; , % { } H M L * # n N`, marcas
+- Operadores: `d c y > < gu gU g~ gc`, dobrados para a linha inteira
+- Objetos de texto: `iw aw iW aW` e `i`/`a` com `( [ { < " ' \` p`
+- `x X s S D C Y p P r R J gJ ~ u Ctrl+R . Ctrl+A Ctrl+X`
+- Registradores (`"a`, `"0`, `"_`, e `"+` para a área de transferência) e macros (`q`, `@`, `@@`)
+- `/`, `?` e os comandos `:w :q :wq :x :qa :e :bd :sp :vs :tabn :tabp :noh :set :sort :d :N`, e
+  `:s` com intervalo (`:%s/a/b/g`, `:'<,'>s/a/b/`), usando a sintaxe de expressões do Vim
+- `gd gr gi gh` vão para a inteligência de código, `zc zo za zM zR` para as dobras
+
+No modo inserir quem digita é o próprio editor, com sugestões e fechamento de parênteses. Os atalhos
+com `Ctrl` que o Vim não usa, como `Ctrl+P` e `Ctrl+S`, continuam valendo.
 
 ## Como é feito
 
 O projeto é dividido para que quase tudo possa ser testado sem abrir janela:
 
 - **`crates/tinta-core`**: o motor, sem nenhuma dependência de interface. Texto em
-  [ropey](https://github.com/cessen/ropey), cursores, desfazer, sintaxe sobre as gramáticas do
-  [syntect](https://github.com/trishume/syntect), busca, git (pelo comando `git`), cliente LSP,
-  snippets, atalhos.
+  [ropey](https://github.com/cessen/ropey), cursores, desfazer, cores sobre as gramáticas do
+  [syntect](https://github.com/trishume/syntect), estrutura com
+  [tree-sitter](https://tree-sitter.github.io/), busca, git (pelo comando `git`), clientes LSP e DAP,
+  o modo Vim, snippets, atalhos.
 - **`crates/tinta`**: a interface em [libcosmic](https://github.com/pop-os/libcosmic). O texto é um
   widget próprio, desenhado em uma grade de caracteres para repintar sem refazer o layout. O resto
   (abas, menus, paleta, configurações, diálogos) são os widgets do próprio COSMIC.
@@ -185,7 +263,8 @@ cargo test --release large_file -- --ignored --nocapture   # mede um arquivo de 
 
 Os testes da interface montam a árvore real de widgets e passam por ela eventos de mouse e teclado,
 desenhando cada quadro em um renderizador de software. O cliente LSP é testado contra o clangd de
-verdade quando ele está instalado.
+verdade quando ele está instalado, e o depurador contra o gdb e o debugpy, compilando e rodando
+programas pequenos. Quem não tem essas ferramentas vê esses testes passarem sem fazer nada.
 
 Para ver o aplicativo rodando, `tests/e2e/run.sh` abre um `cosmic-comp` aninhado, com configuração
 própria, e dirige o app por um script que também tira capturas de tela:
@@ -215,7 +294,11 @@ GPL-3.0-only. COSMIC é uma marca registrada da System76; este é um projeto ind
 
 ## O que falta
 
-- Sem depurador (DAP), extensões nem edição remota.
+- Sem extensões nem edição remota.
+- No depurador: sem anexar a um processo em execução, mudar o valor de uma variável, "rodar até o
+  cursor" ou breakpoints que só registram no console, e o programa depurado não recebe o que se digita
+  (a entrada padrão). Para isso, use o terminal.
+- No Vim: sem `:global`, `:normal`, mapeamentos próprios nem `.vimrc`.
 - Sem navegação pelo teclado na árvore de arquivos, e arrastar abas ainda não reordena: use
   `Ctrl+Shift+PgUp` e `Ctrl+Shift+PgDn`.
 - A quebra de linha fica desligada em arquivos acima de 4 milhões de caracteres.

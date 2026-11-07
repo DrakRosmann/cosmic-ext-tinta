@@ -1261,9 +1261,15 @@ impl Debugger {
 pub fn hover_expression(line: &str, col: usize) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    if !chars.get(col).copied().is_some_and(is_word) {
+    // A position from the mouse rounds to the nearest gap between chars, so the right half of a
+    // word's last letter lands on whatever comes after it.
+    let col = if chars.get(col).copied().is_some_and(is_word) {
+        col
+    } else if col > 0 && chars.get(col - 1).copied().is_some_and(is_word) {
+        col - 1
+    } else {
         return None;
-    }
+    };
     let mut a = col;
     let mut b = col;
     while b + 1 < chars.len() && is_word(chars[b + 1]) {
@@ -1372,7 +1378,9 @@ mod tests {
         assert_eq!(at("int |total = 1;").as_deref(), Some("total"));
         assert_eq!(at("int to|tal = 1;").as_deref(), Some("total"));
         assert_eq!(at("x = p.|y + 1").as_deref(), Some("p.y"));
-        assert_eq!(at("x = p|.y + 1"), None);
+        assert_eq!(at("x = p|.y + 1").as_deref(), Some("p"));
+        assert_eq!(at("return r|;").as_deref(), Some("r"), "the right half of the last letter");
+        assert_eq!(at("a = |;"), None);
         assert_eq!(at("x = a->b.|c;").as_deref(), Some("a->b.c"));
         assert_eq!(at("x = 1|0;"), None);
         assert_eq!(at("x =| 1"), None);
