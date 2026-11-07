@@ -244,6 +244,11 @@ impl Vim {
         s
     }
 
+    /// In the middle of something, like the `x` of `fx` to come.
+    pub fn is_waiting(&self) -> bool {
+        self.pending != Pending::None
+    }
+
     pub fn is_insert(&self) -> bool {
         matches!(self.mode, Mode::Insert | Mode::Replace)
     }
@@ -355,8 +360,8 @@ impl Vim {
                         return;
                     }
                 }
-                // Not through the pairing logic: `.` has to give what was really typed.
-                commands::insert_plain(ctx.doc, ctx.cur, &c.to_string());
+                // The same way the editor types it, so `.` gives the same text, pairs included.
+                commands::type_text(ctx.doc, ctx.cur, &c.to_string(), ctx.opts);
             }
         }
     }

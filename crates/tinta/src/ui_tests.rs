@@ -807,6 +807,85 @@ fn folds_outline_and_breadcrumbs_come_from_the_syntax_tree() {
     assert_eq!(names, vec!["um", "S", "dois"]);
 }
 
+#[test]
+fn vim_mode_edits_through_the_real_key_path() {
+    use tinta_core::vim::Mode;
+    let (mut ui, p) = Ui::with_file();
+    assert!(!ui.app.settings.vim_mode);
+    ui.cmd(Command::ToggleVim);
+    // Normal mode: letters are commands, and don't get typed.
+    ui.typed("jwQ");
+    assert_eq!(ui.text(), SOURCE);
+    assert_eq!(ui.head(), (1, 4));
+    ui.typed("dw");
+    assert!(ui.text().contains("\n    alpha = 1;"), "{}", ui.text());
+    ui.typed("u");
+    assert_eq!(ui.text(), SOURCE);
+    // Insert goes through the editor's own typing.
+    ui.typed("ifoo(");
+    assert_eq!(ui.app.vim.mode, Mode::Insert);
+    assert!(ui.text().contains("    foo(let"), "{}", ui.text());
+    ui.key("escape", Modifiers::empty(), None);
+    assert_eq!(ui.app.vim.mode, Mode::Normal);
+    ui.typed("u");
+    assert_eq!(ui.text(), SOURCE, "all that typing undoes as one");
+    // Visual selection shows on screen as the document's selection.
+    ui.typed("viw");
+    assert_eq!(ui.selection_text(), "let");
+    ui.key("escape", Modifiers::empty(), None);
+    assert_eq!(ui.selection_text(), "");
+    // Shortcuts it doesn't claim still work.
+    ui.key("p", Modifiers::CTRL, None);
+    assert!(ui.app.palette.is_some());
+    ui.key("escape", Modifiers::empty(), None);
+    assert!(ui.app.palette.is_none());
+    // The command line writes the file.
+    ui.typed("ix");
+    ui.key("escape", Modifiers::empty(), None);
+    ui.typed(":");
+    assert!(ui.app.vim_line.is_some());
+    assert_eq!(ui.app.focus, Focus::Input);
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Input("w".into())));
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Submit));
+    ui.frame();
+    assert_eq!(ui.app.focus, Focus::Editor);
+    assert!(std::fs::read_to_string(&p).unwrap().contains("lext alpha"), "the caret was on the t of `let`");
+    // Searching lights up its matches, and :noh puts them out.
+    ui.typed("/");
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Input("alpha".into())));
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Submit));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), 2);
+    ui.typed(":");
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Input("noh".into())));
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Submit));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), 0);
+    // A mouse selection is a visual selection.
+    let a = ui.cell(0, 0);
+    let b = ui.cell(0, 2);
+    ui.move_to(a);
+    ui.press(mouse::Button::Left);
+    ui.move_to(b);
+    ui.release(mouse::Button::Left);
+    assert_eq!(ui.app.vim.mode, Mode::Visual);
+    ui.typed("d");
+    assert!(ui.text().starts_with(" main()"), "{}", ui.text());
+    ui.cmd(Command::ToggleVim);
+}
+
+#[test]
+fn vim_on_a_read_only_buffer_moves_but_does_not_edit() {
+    let (mut ui, _) = Ui::with_file();
+    ui.cmd(Command::ToggleVim);
+    ui.app.active_mut().unwrap().1.doc.readonly = true;
+    ui.typed("jddxix");
+    assert_eq!(ui.text(), SOURCE);
+    assert_eq!(ui.head().0, 1, "j moved");
+    assert_eq!(ui.app.vim.mode, tinta_core::vim::Mode::Normal);
+    ui.cmd(Command::ToggleVim);
+}
+
 /// Menus are surfaces of their own, and closing one asks the same question as closing the window.
 #[test]
 fn a_build_task_runs_and_its_errors_mark_the_file() {

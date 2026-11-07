@@ -109,6 +109,7 @@ pub struct Settings {
     pub terminal_shell: String,
     pub terminal_font_size: f32,
     pub language: String,
+    pub vim_mode: bool,
 }
 
 impl Default for Settings {
@@ -157,6 +158,7 @@ impl Default for Settings {
             terminal_shell: String::new(),
             terminal_font_size: 13.0,
             language: String::new(),
+            vim_mode: false,
         }
     }
 }

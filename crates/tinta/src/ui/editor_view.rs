@@ -184,6 +184,7 @@ pub struct EditorView<'a, Message> {
     pub focused: bool,
     pub current_match: Option<usize>,
     pub inline_blame: Option<&'a str>,
+    pub cursor_style: CursorStyle,
     pub on_event: Box<dyn Fn(EditorEvent) -> Message + 'a>,
 }
 
@@ -893,6 +894,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for EditorView<'a
             focused: self.focused,
             current_match: self.current_match,
             inline_blame: self.inline_blame,
+            cursor_style: self.cursor_style,
             on_event: Box::new(|_| unreachable!("drawing publishes nothing")),
         };
         view.paint(state, r, bounds, &pal);
@@ -1044,12 +1046,12 @@ impl<Message: Clone> EditorView<'_, Message> {
                     let x = x_text + (v + rr.pad as usize) as f32 * m.cell_w;
                     let y = y_at(row);
                     let color = if self.focused { pal.accent } else { alpha(pal.fg, 0.35) };
-                    let rect = match s.cursor_style {
+                    let rect = match self.cursor_style {
                         CursorStyle::Bar => Rectangle::new(Point::new(x - 1.0, y), Size::new(2.0, m.line_h)),
                         CursorStyle::Block => Rectangle::new(Point::new(x, y), Size::new(m.cell_w, m.line_h)),
                         CursorStyle::Underline => Rectangle::new(Point::new(x, y + m.line_h - 2.0), Size::new(m.cell_w, 2.0)),
                     };
-                    let color = if s.cursor_style == CursorStyle::Block { alpha(color, 0.55) } else { color };
+                    let color = if self.cursor_style == CursorStyle::Block { alpha(color, 0.55) } else { color };
                     quad(r, rect, color);
                 }
             });

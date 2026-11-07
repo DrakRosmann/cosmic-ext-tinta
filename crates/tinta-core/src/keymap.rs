@@ -134,6 +134,7 @@ commands! {
     // Folding
     Fold, "fold.fold", "Fold", "Dobrar", ["ctrl+shift+["];
     Unfold, "fold.unfold", "Unfold", "Desdobrar", ["ctrl+shift+]"];
+    FoldToggle, "fold.toggle", "Toggle Fold", "Dobrar/desdobrar", [];
     FoldAll, "fold.all", "Fold All", "Dobrar tudo", ["ctrl+k ctrl+0"];
     UnfoldAll, "fold.none", "Unfold All", "Desdobrar tudo", ["ctrl+k ctrl+j"];
     // Code intelligence
@@ -165,6 +166,7 @@ commands! {
     FocusNextGroup, "view.nextGroup", "Focus Next Editor Group", "Focar próximo grupo de editores", ["ctrl+k ctrl+right"];
     FocusPrevGroup, "view.prevGroup", "Focus Previous Editor Group", "Focar grupo de editores anterior", ["ctrl+k ctrl+left"];
     CloseGroup, "view.closeGroup", "Close Editor Group", "Fechar grupo de editores", [];
+    ToggleVim, "view.vim", "Toggle Vim Mode", "Alternar modo Vim", [];
     ToggleWordWrap, "view.wrap", "Toggle Word Wrap", "Alternar quebra de linha", ["alt+z"];
     ToggleMinimap, "view.minimap", "Toggle Minimap", "Alternar minimapa", [];
     ToggleWhitespace, "view.whitespace", "Toggle Whitespace", "Alternar espaços visíveis", [];

@@ -111,6 +111,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .add(toggle("Insert spaces", s.insert_spaces, B::InsertSpaces))
         .add(toggle("Detect indentation", s.detect_indentation, B::DetectIndent))
         .add(toggle("Word wrap", s.word_wrap, B::WordWrap))
+        .add(toggle("Vim mode", s.vim_mode, B::Vim))
         .add(toggle("Code folding", s.folding, B::Folding))
         .add(toggle("Auto close brackets", s.auto_pairs, B::AutoPairs))
         .add(toggle("Auto indent", s.auto_indent, B::AutoIndent));

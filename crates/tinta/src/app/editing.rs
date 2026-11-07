@@ -235,7 +235,11 @@ impl App {
                 self.clamp_scroll(id);
                 Task::none()
             }
-            EditorEvent::Press { row, vcol, clicks, mods, button } => self.on_press(id, row, vcol, clicks, mods, button),
+            EditorEvent::Press { row, vcol, clicks, mods, button } => {
+                let t = self.on_press(id, row, vcol, clicks, mods, button);
+                self.vim_after_mouse();
+                t
+            }
             EditorEvent::Drag { row, vcol, mods } => {
                 self.on_drag(id, row, vcol, mods);
                 Task::none()
@@ -245,6 +249,7 @@ impl App {
                     t.column_anchor = None;
                     t.drag_origin = None;
                 }
+                self.vim_after_mouse();
                 Task::none()
             }
             EditorEvent::FoldToggle { row } => {
@@ -480,11 +485,16 @@ impl App {
 
     /// Recomputes matches when the query or the text changed.
     pub fn refresh_find_matches(&mut self) {
-        if !self.find.open {
+        // Vim's search lights up its matches without the find bar.
+        let vim_q = self.vim_highlight.clone().filter(|_| !self.find.open);
+        if !self.find.open && vim_q.is_none() {
             return;
         }
         let gen_id = self.find.generation;
-        let q = self.find.query.clone();
+        let q = match vim_q {
+            Some(pattern) => find::Query { pattern, regex: true, case_sensitive: true, whole_word: false },
+            None => self.find.query.clone(),
+        };
         let sel_ranges = self.find.in_selection.clone();
         let Some(tab_id) = self.active_tab_id() else { return };
         let Some(t) = self.tabs.get(&tab_id) else { return };

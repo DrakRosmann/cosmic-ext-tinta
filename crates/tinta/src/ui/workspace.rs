@@ -58,7 +58,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if app.zen {
         main
     } else {
-        column::with_children(vec![container(main).height(Length::Fill).into(), status::view(app)]).into()
+        let mut col = column::with_capacity(3);
+        col = col.push(container(main).height(Length::Fill));
+        if let Some((prefix, text_now)) = &app.vim_line {
+            let input = widget::text_input("", text_now.as_str())
+                .id(widget::Id::new(crate::app::VIM_LINE))
+                .on_input(|s| Message::Vim(crate::app::VimMsg::Input(s)))
+                .on_submit(|_| Message::Vim(crate::app::VimMsg::Submit))
+                .size(13)
+                .width(Length::Fill);
+            col = col.push(
+                row::with_children(vec![text(prefix.to_string()).size(14).font(cosmic::font::mono()).into(), input.into()])
+                    .spacing(6)
+                    .padding([2, 10])
+                    .align_y(Alignment::Center),
+            );
+        }
+        col.push(status::view(app)).into()
     };
 
     let mut layers: Vec<Element<'_, Message>> = vec![files_drop_target(body)];
@@ -205,6 +221,13 @@ fn group_view(app: &App, g: usize) -> Element<'_, Message> {
         focused: active_group && app.focus == Focus::Editor && app.palette.is_none() && app.dialog.is_none(),
         current_match: if active_group { app.find.current } else { None },
         inline_blame: blame,
+        cursor_style: match (app.settings.vim_mode, app.vim.mode) {
+            (false, _) | (true, tinta_core::vim::Mode::Insert) => app.settings.cursor_style,
+            (true, tinta_core::vim::Mode::Normal) => tinta_core::settings::CursorStyle::Block,
+            (true, tinta_core::vim::Mode::Replace) => tinta_core::settings::CursorStyle::Underline,
+            // The selection shows where it is; the caret marks its end.
+            (true, _) => tinta_core::settings::CursorStyle::Bar,
+        },
         on_event: Box::new(move |ev| Message::Editor(tab_id, ev)),
     }
     .into();

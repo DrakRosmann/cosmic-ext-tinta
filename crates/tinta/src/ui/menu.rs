@@ -218,6 +218,7 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                 check(C::ToggleMinimap, s.minimap),
                 check(C::ToggleStickyScroll, s.sticky_scroll),
                 check(C::ToggleBlame, s.inline_blame),
+                check(C::ToggleVim, s.vim_mode),
                 b(C::ToggleWhitespace),
                 b(C::ToggleLineNumbers),
                 b(C::MarkdownPreview),

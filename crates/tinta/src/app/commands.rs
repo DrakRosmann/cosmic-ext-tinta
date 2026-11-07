@@ -278,6 +278,21 @@ impl App {
                 }
                 return Task::batch(t);
             }
+            C::ToggleVim => {
+                self.settings.vim_mode = !self.settings.vim_mode;
+                self.vim = tinta_core::vim::Vim::new();
+                self.vim_reset();
+                self.persist_settings();
+            }
+            C::FoldToggle => {
+                self.sync_active_structure();
+                let folded = self.active().is_some_and(|(t, e)| t.folds.is_folded(e.doc.char_to_line(t.cursors.head())));
+                if folded {
+                    self.unfold_at_cursor();
+                } else {
+                    self.fold_at_cursor();
+                }
+            }
             C::ToggleWordWrap => {
                 self.settings.word_wrap = !self.settings.word_wrap;
                 self.persist_settings();
@@ -747,6 +762,11 @@ impl App {
                         self.index_files();
                     }
                     BoolSetting::Lsp => s.lsp_enabled = v,
+                    BoolSetting::Vim => {
+                        s.vim_mode = v;
+                        self.vim = tinta_core::vim::Vim::new();
+                        self.vim_reset();
+                    }
                 }
             }
         }

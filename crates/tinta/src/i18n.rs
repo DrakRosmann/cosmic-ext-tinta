@@ -77,6 +77,8 @@ pub fn tr(en: &'static str) -> &'static str {
         "Refresh status" => "Atualizar estado",
         "No symbols" => "Nenhum símbolo",
         "Problems" => "Problemas",
+        "Vim mode" => "Modo Vim",
+        "No write since last change (add ! to override)" => "Alterações não salvas (use ! para descartar)",
         "Tasks" => "Tarefas",
         "No tasks found in this folder" => "Nenhuma tarefa encontrada nesta pasta",
         "No task has run yet" => "Nenhuma tarefa executada ainda",

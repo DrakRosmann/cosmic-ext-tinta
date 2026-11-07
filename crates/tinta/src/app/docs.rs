@@ -983,6 +983,7 @@ impl App {
 
     pub fn on_active_changed(&mut self) -> Task<Message> {
         self.close_popups();
+        self.vim_reset();
         self.refresh_symbols();
         self.after_caret_move();
         self.mark_session_dirty();

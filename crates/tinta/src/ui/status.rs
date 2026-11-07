@@ -28,6 +28,9 @@ fn icon_item<'a>(h: icon::Handle, label: String, msg: Message) -> Element<'a, Me
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let mut r = row::with_capacity(14).align_y(Alignment::Center).width(Length::Fill).spacing(1);
+    if app.settings.vim_mode {
+        r = r.push(container(text(app.vim.status()).size(12).font(cosmic::font::semibold())).padding([0, 8]));
+    }
     if let Some(b) = &app.git.branch {
         let mut label = b.clone();
         if let Some((ahead, behind)) = app.git.ahead_behind
