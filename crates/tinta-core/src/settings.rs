@@ -105,10 +105,10 @@ pub struct Settings {
     pub lsp_enabled: bool,
     pub lsp_servers: HashMap<String, LspServer>,
     pub scroll_speed: f32,
-    pub smooth_caret: bool,
     pub terminal_shell: String,
     pub terminal_font_size: f32,
     pub language: String,
+    pub vim_mode: bool,
 }
 
 impl Default for Settings {
@@ -153,10 +153,10 @@ impl Default for Settings {
             lsp_enabled: true,
             lsp_servers: HashMap::new(),
             scroll_speed: 3.0,
-            smooth_caret: false,
             terminal_shell: String::new(),
             terminal_font_size: 13.0,
             language: String::new(),
+            vim_mode: false,
         }
     }
 }

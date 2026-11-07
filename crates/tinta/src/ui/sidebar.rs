@@ -11,7 +11,6 @@ use cosmic::widget::{self, button, column, container, icon, row, scrollable, tex
 use cosmic::{Element, theme};
 use tinta_core::git::StatusEntry;
 use tinta_core::keymap::Command;
-use tinta_core::outline;
 
 const ROW_H: f32 = 26.0;
 
@@ -20,11 +19,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Some(SidebarView::Search) => search_view(app),
         Some(SidebarView::Git) => git_view(app),
         Some(SidebarView::Outline) => outline_view(app),
+        Some(SidebarView::Debug) => super::debug_view::sidebar(app),
         _ => explorer_view(app),
     }
 }
 
-fn header<'a>(title: String, buttons: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+pub(super) fn header<'a>(title: String, buttons: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     let mut r = row::with_capacity(buttons.len() + 2).align_y(Alignment::Center).padding([6, 8, 4, 12]).spacing(2);
     r = r.push(text(title.to_uppercase()).size(11).font(cosmic::font::semibold()).width(Length::Fill).wrapping(cosmic::iced::widget::text::Wrapping::None));
     for b in buttons {
@@ -163,7 +163,7 @@ fn explorer_view(app: &App) -> Element<'_, Message> {
             .height(Length::Fixed(ROW_H))
             .width(Length::Fill)
             .on_press(Message::Explorer(ExplorerMsg::Click(i)));
-        col = col.push(widget::context_menu(b, Some(row_menu(i, r.is_dir))));
+        col = col.push(super::menu::context(app, b, row_menu(i, r.is_dir)));
     }
     col = col.push(widget::Space::new().height(Length::Fixed((total - last) as f32 * ROW_H)));
     column::with_children(vec![
@@ -226,7 +226,8 @@ fn search_view(app: &App) -> Element<'_, Message> {
     } else if s.total == 0 {
         tr("No results").to_string()
     } else {
-        format!("{} {} {} {}", s.total, tr("matches in"), s.results.len(), tr("files"))
+        let plus = if s.truncated { "+" } else { "" };
+        format!("{}{plus} {} {} {}", s.total, tr("matches in"), s.results.len(), tr("files"))
     };
     form = form.push(text(summary).size(12).class(theme::Text::Color(dim)));
 
@@ -376,7 +377,7 @@ fn git_view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// What's listed in the outline: LSP's list when it's current, the pattern matcher otherwise.
+/// What's listed in the outline: LSP's list when it's current, otherwise the tree's or the patterns'.
 pub fn symbols_of(e: &DocEntry) -> Vec<(String, String, usize, usize)> {
     if let Some((rev, list)) = &e.lsp_symbols
         && *rev == e.doc.revision
@@ -384,27 +385,29 @@ pub fn symbols_of(e: &DocEntry) -> Vec<(String, String, usize, usize)> {
     {
         return list.iter().map(|s| (s.name.clone(), s.detail.clone(), s.line, s.depth)).collect();
     }
-    outline::symbols(&e.doc).into_iter().map(|s| (s.name, s.kind.to_string(), s.line, s.depth)).collect()
+    e.symbols.iter().map(|s| (s.name.clone(), s.kind.to_string(), s.line, s.depth)).collect()
 }
 
 /// The symbols around the caret, outermost first, for the breadcrumbs.
 pub fn current_symbols(e: &DocEntry, t: &Tab) -> Vec<String> {
     let line = e.doc.char_to_line(t.cursors.head());
-    let mut chain: Vec<(usize, &str)> = Vec::new();
+    let mut chain: Vec<(usize, &str, Option<usize>)> = Vec::new();
     for s in e.symbols.iter().take_while(|s| s.line <= line) {
-        while chain.last().is_some_and(|(d, _)| *d >= s.depth) {
+        while chain.last().is_some_and(|(d, _, _)| *d >= s.depth) {
             chain.pop();
         }
-        chain.push((s.depth, s.name.as_str()));
+        chain.push((s.depth, s.name.as_str(), s.end));
     }
-    // A symbol further out than the caret's own line has ended.
+    // From the tree, symbols say where they end. From patterns, indentation has to tell.
     let tab = e.doc.indent.width.max(1);
     let indent = tinta_core::display::line_indent_vcols(&e.doc, line, tab) / tab;
-    if !e.doc.line_is_blank(line) {
-        let last_here = e.symbols.iter().any(|s| s.line == line);
-        chain.retain(|(d, _)| *d < indent || (last_here && *d == indent));
-    }
-    chain.into_iter().map(|(_, n)| n.to_string()).collect()
+    let blank = e.doc.line_is_blank(line);
+    let on_header = e.symbols.iter().any(|s| s.line == line);
+    chain.retain(|(d, _, end)| match end {
+        Some(end) => line <= *end,
+        None => blank || *d < indent || (on_header && *d == indent),
+    });
+    chain.into_iter().map(|(_, n, _)| n.to_string()).collect()
 }
 
 fn outline_view(app: &App) -> Element<'_, Message> {

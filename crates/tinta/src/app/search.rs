@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tinta_core::find::{self, FileMatches, Query, SearchScope};
 
 pub const SEARCH_INPUT: &str = "search-input";
+const MAX_LISTED_MATCHES: usize = 50_000;
 
 #[derive(Debug, Clone)]
 pub enum SearchRow {
@@ -32,6 +33,9 @@ pub struct SearchPanel {
     pub generation: u64,
     pub cancel: Option<Arc<AtomicBool>>,
     pub total: usize,
+    /// The list stopped at the limit: there's more than it shows.
+    pub truncated: bool,
+    pub replacing: bool,
     pub scroll_y: f32,
     pub view_h: f32,
 }
@@ -52,6 +56,7 @@ pub enum SearchMsg {
     ToggleFile(PathBuf),
     Open(PathBuf, usize, usize, usize),
     ReplaceAll,
+    ReplaceIn(Vec<PathBuf>),
     Scrolled(f32, f32),
 }
 
@@ -83,6 +88,7 @@ impl App {
         self.search.results.clear();
         self.search.rows.clear();
         self.search.total = 0;
+        self.search.truncated = false;
         self.search.error = None;
         self.search.generation += 1;
         if self.search.query.pattern.is_empty() {
@@ -100,7 +106,7 @@ impl App {
             hidden: self.settings.show_hidden_files,
         };
         std::thread::spawn(move || {
-            let r = find::search_files(&root, &query, &scope, &cancel, 50_000, |f| {
+            let r = find::search_files(&root, &query, &scope, &cancel, MAX_LISTED_MATCHES, |f| {
                 bus::send(Message::Search(SearchMsg::Found(gen_id, f)));
             });
             bus::send(Message::Search(SearchMsg::Done(gen_id, r)));
@@ -161,8 +167,9 @@ impl App {
             SearchMsg::Done(g, r) => {
                 if g == self.search.generation {
                     self.search.running = false;
-                    if let Err(e) = r {
-                        self.search.error = Some(e);
+                    match r {
+                        Ok(n) => self.search.truncated = n >= MAX_LISTED_MATCHES,
+                        Err(e) => self.search.error = Some(e),
                     }
                 }
             }
@@ -184,7 +191,8 @@ impl App {
                 self.after_caret_move();
                 return t;
             }
-            SearchMsg::ReplaceAll => return self.replace_in_files(),
+            SearchMsg::ReplaceAll => self.start_replace_in_files(),
+            SearchMsg::ReplaceIn(paths) => return self.replace_in_files(paths),
             SearchMsg::Scrolled(y, h) => {
                 self.search.scroll_y = y;
                 self.search.view_h = h;
@@ -193,12 +201,42 @@ impl App {
         Task::none()
     }
 
+    /// The list on screen stops at a limit, so replacing walks the folder again, without one.
+    fn start_replace_in_files(&mut self) {
+        let Some(root) = self.folder.clone() else { return };
+        if self.search.replacing || self.search.query.pattern.is_empty() {
+            return;
+        }
+        self.search.replacing = true;
+        let query = self.search.query.clone();
+        let scope = SearchScope {
+            include: self.search.include.clone(),
+            exclude: self.search.exclude.clone(),
+            hidden: self.settings.show_hidden_files,
+        };
+        std::thread::spawn(move || {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut paths = Vec::new();
+            let _ = find::search_files(&root, &query, &scope, &cancel, usize::MAX, |f| paths.push(f.path));
+            bus::send(Message::Search(SearchMsg::ReplaceIn(paths)));
+        });
+    }
+
     /// Open files change in the buffer, with undo; the rest change on disk.
-    fn replace_in_files(&mut self) -> Task<Message> {
+    fn replace_in_files(&mut self, mut paths: Vec<PathBuf>) -> Task<Message> {
+        self.search.replacing = false;
         let q = self.search.query.clone();
         let Ok(re) = q.compile() else { return Task::none() };
         let rep = self.search.replacement.clone();
-        let paths: Vec<PathBuf> = self.search.results.iter().map(|f| f.path.clone()).collect();
+        // The walk read the disk: text only in an unsaved buffer counts too, unless filters are on.
+        if self.search.include.trim().is_empty() && self.search.exclude.trim().is_empty() {
+            let root = self.folder.clone().unwrap_or_default();
+            for e in self.docs.values().filter(|e| e.doc.is_dirty()) {
+                if let Some(p) = e.doc.path.clone().filter(|p| p.starts_with(&root) && !paths.contains(p)) {
+                    paths.push(p);
+                }
+            }
+        }
         let mut total = 0;
         let mut failures = Vec::new();
         for p in paths {
@@ -225,7 +263,11 @@ impl App {
         }
         self.run_search();
         self.refresh_git_panel();
+        let failed = failures.len();
         self.output.extend(failures);
+        if failed > 0 {
+            return self.toast(format!("{total} {}; {failed} {}", tr("replacements"), tr("files failed, see Output")));
+        }
         self.toast(format!("{total} {}", tr("replacements")))
     }
 }

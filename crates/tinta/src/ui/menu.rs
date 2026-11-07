@@ -90,6 +90,8 @@ fn binds(app: &App) -> HashMap<KeyBind, Act> {
     out
 }
 
+static MENU_BAR: std::sync::LazyLock<cosmic::widget::Id> = std::sync::LazyLock::new(|| cosmic::widget::Id::new("menu-bar"));
+
 pub fn menu_bar(app: &App) -> Element<'_, Message> {
     let pt = app.pt();
     let b = |c: Command| Item::Button(c.title(pt), None, Act(c));
@@ -115,19 +117,14 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
         d(),
         b(C::OpenSettings),
         Item::Folder(
-            tr("Reference"),
+            tr("Configuration Files"),
             vec![b(C::OpenSettingsJson), b(C::OpenKeybindings), b(C::OpenSnippets)],
         ),
         d(),
         b(C::Quit),
     ]);
-    let tree = |label: &'static str, items| {
-        menu::Tree::with_children(
-            Element::from(menu::root(label)),
-            menu::items(&keys, items),
-        )
-    };
-    menu::bar(vec![
+    let tree = |label: &'static str, items| (label, items);
+    let trees = vec![
         tree(tr("File"), recent_or_open),
         tree(
             tr("Edit"),
@@ -221,6 +218,7 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                 check(C::ToggleMinimap, s.minimap),
                 check(C::ToggleStickyScroll, s.sticky_scroll),
                 check(C::ToggleBlame, s.inline_blame),
+                check(C::ToggleVim, s.vim_mode),
                 b(C::ToggleWhitespace),
                 b(C::ToggleLineNumbers),
                 b(C::MarkdownPreview),
@@ -303,13 +301,58 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                 b(C::GitRefresh),
             ],
         ),
-        tree(tr("Terminal"), vec![b(C::ToggleTerminal), b(C::NewTerminal)]),
+        tree(
+            tr("Terminal"),
+            vec![
+                b(C::ToggleTerminal),
+                b(C::NewTerminal),
+                d(),
+                b(C::RunBuild),
+                b(C::RunTask),
+                b(C::RerunTask),
+                b(C::StopTask),
+                b(C::ShowTasks),
+                b(C::NextTaskProblem),
+                b(C::PrevTaskProblem),
+            ],
+        ),
+        tree(
+            tr("Debug"),
+            vec![
+                b(C::DebugStart),
+                b(C::DebugStop),
+                b(C::DebugRestart),
+                b(C::DebugPause),
+                d(),
+                b(C::StepOver),
+                b(C::StepInto),
+                b(C::StepOut),
+                d(),
+                b(C::ToggleBreakpoint),
+                b(C::BreakpointCondition),
+                b(C::RemoveBreakpoints),
+                d(),
+                b(C::ShowDebug),
+                b(C::ShowDebugConsole),
+                b(C::DebugSelectConfig),
+                b(C::DebugConfigure),
+            ],
+        ),
         tree(tr("Help"), vec![b(C::ShowShortcuts), b(C::About)]),
-    ])
-    .item_height(menu::ItemHeight::Dynamic(36))
-    .item_width(menu::ItemWidth::Uniform(320))
-    .spacing(2.0)
-    .into()
+    ];
+    let bar = cosmic::widget::responsive_menu_bar()
+        .item_height(menu::ItemHeight::Dynamic(36))
+        .item_width(menu::ItemWidth::Uniform(320))
+        .spacing(2.0)
+        .into_element(&app.core, &keys, MENU_BAR.clone(), Message::Surface, trees);
+    // Menu roots paint their label in the inherited icon colour, and with the content container
+    // off nothing above sets one: without this the labels are invisible.
+    cosmic::widget::container(bar)
+        .class(cosmic::theme::Container::custom(|t: &cosmic::Theme| {
+            let on: cosmic::iced::Color = t.cosmic().background(false).on.into();
+            cosmic::iced::widget::container::Style { icon_color: Some(on), text_color: Some(on), ..Default::default() }
+        }))
+        .into()
 }
 
 /// Right click in the text.
@@ -331,6 +374,7 @@ pub fn editor_menu(app: &App) -> Vec<menu::Tree<Message>> {
             b(C::Copy),
             b(C::Paste),
             d(),
+            b(C::ToggleBreakpoint),
             b(C::ToggleComment),
             b(C::AddNextOccurrence),
             b(C::SelectAllOccurrences),
@@ -361,4 +405,13 @@ pub fn row_menu(index: usize, is_dir: bool) -> Vec<menu::Tree<Message>> {
         b("Open in Terminal", RowAction::Terminal),
     ]);
     menu::items(&empty, items)
+}
+
+/// A right-click menu as a popup of its own, so it isn't cut off by the window's edge.
+pub fn context<'a>(app: &App, content: impl Into<Element<'a, Message>>, items: Vec<menu::Tree<Message>>) -> Element<'a, Message> {
+    let mut m = cosmic::widget::context_menu(content, Some(items));
+    if let Some(id) = app.core.main_window_id() {
+        m = m.window_id(id).on_surface_action(Message::Surface);
+    }
+    m.into()
 }

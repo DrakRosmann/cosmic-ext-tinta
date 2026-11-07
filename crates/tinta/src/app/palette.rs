@@ -42,6 +42,8 @@ pub enum PAction {
     Snippet(String),
     Action(usize),
     Location(PathBuf, usize, usize),
+    Task(Box<tinta_core::tasks::Task>),
+    DebugConfig(String),
 }
 
 #[derive(Debug, Clone)]
@@ -394,7 +396,7 @@ impl App {
                 let theme = self.syntax_theme.clone();
                 if let Some((t, e)) = self.active_mut() {
                     e.doc.language = language::by_name(&n);
-                    super::docs::attach_highlighter(&mut e.doc, theme);
+                    super::docs::attach_language(&mut e.doc, theme);
                     let d = t.doc;
                     return self.lsp_open_doc(d);
                 }
@@ -429,6 +431,11 @@ impl App {
                     }
                     Err(e) => self.toast(e),
                 }
+            }
+            PAction::Task(t) => self.run_task(*t),
+            PAction::DebugConfig(name) => {
+                self.debug.selected = Some(name);
+                self.debug_start(false)
             }
             PAction::Snippet(body) => {
                 self.insert_snippet(&body, None);

@@ -58,7 +58,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if app.zen {
         main
     } else {
-        column::with_children(vec![container(main).height(Length::Fill).into(), status::view(app)]).into()
+        let mut col = column::with_capacity(3);
+        col = col.push(container(main).height(Length::Fill));
+        if let Some((prefix, text_now)) = &app.vim_line {
+            let input = widget::text_input("", text_now.as_str())
+                .id(widget::Id::new(crate::app::VIM_LINE))
+                .on_input(|s| Message::Vim(crate::app::VimMsg::Input(s)))
+                .on_submit(|_| Message::Vim(crate::app::VimMsg::Submit))
+                .size(13)
+                .width(Length::Fill);
+            col = col.push(
+                row::with_children(vec![text(prefix.to_string()).size(14).font(cosmic::font::mono()).into(), input.into()])
+                    .spacing(6)
+                    .padding([2, 10])
+                    .align_y(Alignment::Center),
+            );
+        }
+        col.push(status::view(app)).into()
     };
 
     let mut layers: Vec<Element<'_, Message>> = vec![files_drop_target(body)];
@@ -143,6 +159,7 @@ fn activity_rail(app: &App) -> Element<'_, Message> {
             item(icons::search(), SidebarView::Search, "Search"),
             git_el,
             item(icons::outline(), SidebarView::Outline, "Outline"),
+            item(icons::debug(), SidebarView::Debug, "Run and Debug"),
         ])
         .spacing(4)
         .padding([6, 4])
@@ -196,6 +213,15 @@ fn group_view(app: &App, g: usize) -> Element<'_, Message> {
         let blocks = tab.preview_cache.as_ref().map_or(EMPTY, |(_, b)| b.as_slice());
         return col.push(markdown::view(blocks, app.metrics.font)).into();
     }
+    if let Some(data) = &tab.diff {
+        let view: Element<'_, Message> = super::diff_view::DiffView {
+            data,
+            metrics: app.metrics,
+            on_event: Box::new(move |ev| Message::Diff(tab_id, ev)),
+        }
+        .into();
+        return col.push(view).into();
+    }
     let blame = entry.blame.as_ref().filter(|_| app.settings.inline_blame && active_group).map(|(_, s)| s.as_str()).filter(|s| !s.is_empty());
     let editor: Element<'_, Message> = EditorView {
         entry,
@@ -205,11 +231,19 @@ fn group_view(app: &App, g: usize) -> Element<'_, Message> {
         focused: active_group && app.focus == Focus::Editor && app.palette.is_none() && app.dialog.is_none(),
         current_match: if active_group { app.find.current } else { None },
         inline_blame: blame,
+        breakpoints: entry.doc.path.as_ref().and_then(|p| app.debug.breakpoints.get(p)).map_or(&[], Vec::as_slice),
+        exec_line: app.debug.session.as_ref().and_then(|s| s.exec_location()).filter(|(p, _, _)| entry.doc.path.as_deref() == Some(*p)).map(|(_, l, top)| (l, top)),
+        cursor_style: match (app.settings.vim_mode, app.vim.mode) {
+            (false, _) | (true, tinta_core::vim::Mode::Insert) => app.settings.cursor_style,
+            (true, tinta_core::vim::Mode::Normal) => tinta_core::settings::CursorStyle::Block,
+            (true, tinta_core::vim::Mode::Replace) => tinta_core::settings::CursorStyle::Underline,
+            // The selection shows where it is; the caret marks its end.
+            (true, _) => tinta_core::settings::CursorStyle::Bar,
+        },
         on_event: Box::new(move |ev| Message::Editor(tab_id, ev)),
     }
     .into();
-    let editor: Element<'_, Message> =
-        cosmic::widget::context_menu(editor, Some(super::menu::editor_menu(app))).into();
+    let editor = super::menu::context(app, editor, super::menu::editor_menu(app));
 
     let mut layers = vec![editor];
     if active_group {
@@ -343,7 +377,8 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     } else if total == 0 {
         tr("No results").to_string()
     } else {
-        format!("{} {} {total}", f.current.map_or(0, |c| c + 1), tr("of"))
+        let plus = if total >= crate::app::MAX_SHOWN_MATCHES { "+" } else { "" };
+        format!("{} {} {total}{plus}", f.current.map_or(0, |c| c + 1), tr("of"))
     };
     let input = widget::text_input(tr("Find"), f.query.pattern.as_str())
         .id(widget::Id::new(FIND_INPUT))

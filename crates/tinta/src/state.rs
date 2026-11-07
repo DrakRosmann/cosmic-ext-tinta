@@ -97,6 +97,25 @@ pub enum TabKind {
     Text,
     /// Rendered Markdown of the document.
     Preview,
+    /// Two versions of a file, side by side.
+    Diff,
+}
+
+/// What a side-by-side tab shows. Both sides are snapshots, with their own colours.
+pub struct DiffData {
+    pub left: Document,
+    pub right: Document,
+    pub left_title: String,
+    pub right_title: String,
+    pub rows: Vec<tinta_core::diff::DiffRow>,
+    pub hunks: Vec<usize>,
+    pub added: usize,
+    pub removed: usize,
+    pub scroll_y: f32,
+    pub scroll_x: f32,
+    pub view_h: f32,
+    pub current: Option<usize>,
+    pub new_path: Option<PathBuf>,
 }
 
 pub struct Tab {
@@ -122,6 +141,7 @@ pub struct Tab {
     /// Bumped on every caret change: restarts the blink.
     pub caret_stamp: u64,
     pub preview_cache: Option<(u64, Vec<crate::ui::markdown::Block>)>,
+    pub diff: Option<Box<DiffData>>,
 }
 
 /// What a drag extends from: double click drags by word, triple click by line.
@@ -156,6 +176,7 @@ impl Tab {
             occurrence: None,
             caret_stamp: 0,
             preview_cache: None,
+            diff: None,
         }
     }
 }

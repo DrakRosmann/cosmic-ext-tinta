@@ -256,6 +256,22 @@ fn dragging_selects() {
     assert_eq!(ui.selection_text(), "alpha = 1;\n    let");
 }
 
+/// The click that closes a popup reaches the text, but its release goes to the popup. Found with
+/// a real pointer: the drag never ended, and moving the mouse went on selecting.
+#[test]
+fn a_lost_release_does_not_leave_a_drag_running() {
+    let (mut ui, _) = Ui::with_file();
+    let a = ui.cell(1, 8);
+    ui.move_to(a);
+    ui.press(mouse::Button::Left);
+    // No release: the pointer comes back to the window as the popup goes away.
+    ui.send(vec![Event::Mouse(mouse::Event::CursorEntered)]);
+    let b = ui.cell(4, 3);
+    ui.move_to(b);
+    assert_eq!(ui.selection_text(), "");
+    assert_eq!(ui.head(), (1, 8));
+}
+
 #[test]
 fn shift_click_extends_and_alt_click_adds_a_cursor() {
     let (mut ui, _) = Ui::with_file();
@@ -336,7 +352,9 @@ fn fold_arrow_in_the_gutter_folds_and_unfolds() {
 fn line_number_click_selects_the_line() {
     let (mut ui, _) = Ui::with_file();
     let o = ui.origin_from_view();
-    let p = Point::new(o.x + 12.0, o.y + ui.app.metrics.line_h * 1.5);
+    let c = ui.cell(1, 0);
+    let g = Geometry::new(SOURCE.lines().count() + 1, ui.app.active().unwrap().0.view_w, &ui.app.metrics, &ui.app.settings);
+    let p = Point::new(o.x + g.gutter_w - 24.0, c.y);
     ui.click_at(p);
     assert_eq!(ui.selection_text(), "    let alpha = 1;\n");
 }
@@ -434,7 +452,8 @@ fn palette_filters_and_runs_a_clicked_command() {
     ui.cmd(Command::CommandPalette);
     assert!(ui.app.palette.is_some());
     assert_eq!(ui.app.focus, Focus::Input);
-    let _ = ui.app.update(Message::Palette(crate::app::PaletteMsg::Input("quebra".into())));
+    let title = Command::ToggleWordWrap.title(ui.app.pt()).to_string();
+    let _ = ui.app.update(Message::Palette(crate::app::PaletteMsg::Input(title)));
     ui.frame();
     let items: Vec<String> = ui.app.palette.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
     assert!(!items.is_empty());
@@ -586,6 +605,79 @@ fn find_highlights_and_replace_all_works() {
     assert_eq!(ui.text(), SOURCE);
 }
 
+/// More matches than get highlighted: all of them still change.
+#[test]
+fn replace_all_goes_past_the_highlight_limit() {
+    let dir = temp_dir("limit");
+    let p = dir.join("many.txt");
+    let n = crate::app::MAX_SHOWN_MATCHES + 500;
+    std::fs::write(&p, "x\n".repeat(n)).unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.cmd(Command::Find);
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::Query("x".into())));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), crate::app::MAX_SHOWN_MATCHES);
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::Replacement("y".into())));
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::ReplaceAll));
+    ui.frame();
+    assert_eq!(ui.text().matches('y').count(), n);
+    assert_eq!(ui.text().matches('x').count(), 0);
+}
+
+/// Replacing in the folder used to act on the list on screen, which stops at a limit.
+#[test]
+fn replace_in_files_reaches_files_past_the_list_limit() {
+    let dir = temp_dir("limit2");
+    // One file fills the list; the next, alphabetically or not, would be left out of it.
+    std::fs::write(dir.join("a.txt"), "x\n".repeat(60_000)).unwrap();
+    std::fs::write(dir.join("b.txt"), "x\n").unwrap();
+    std::fs::write(dir.join("c.txt"), "x\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::Query("x".into())));
+    wait_for(&mut ui, |a| !a.search.running);
+    assert!(ui.app.search.truncated, "the list should say it stopped early");
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::Replacement("y".into())));
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::ReplaceAll));
+    wait_for(&mut ui, |a| !a.search.replacing);
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        assert!(!std::fs::read_to_string(dir.join(f)).unwrap().contains('x'), "{f}");
+    }
+}
+
+#[test]
+fn a_separate_instance_leaves_session_and_backups_alone() {
+    let (mut ui, _) = Ui::with_file();
+    assert!(ui.app.new_session);
+    tinta_core::session::write_backup("of-the-main-instance", "texto").unwrap();
+    ui.typed("x");
+    ui.app.persist_on_quit();
+    assert_eq!(tinta_core::session::read_backup("of-the-main-instance").as_deref(), Some("texto"));
+    tinta_core::session::remove_backup("of-the-main-instance");
+    // And since nothing is kept for it, quitting with unsaved work asks.
+    let _ = ui.app.request_quit();
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::QuitUnsaved)));
+}
+
+#[test]
+fn opening_a_file_does_not_lose_the_session_it_would_have_restored() {
+    let (mut ui, p) = Ui::with_file();
+    ui.typed("rascunho ");
+    ui.app.write_backups(false);
+    crate::app::save_session(&ui.app);
+    let text = ui.text();
+    drop(ui);
+    let other = temp_dir("other").join("b.txt");
+    std::fs::write(&other, "b").unwrap();
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let flags = Flags { targets: vec![(other, None)], new_session: false };
+    let (app, _) = App::init(Core::default(), flags);
+    drop(guard);
+    assert_eq!(app.active().unwrap().1.doc.file_name(), "b.txt", "the requested file is in front");
+    let id = app.doc_by_path(&p).expect("the old tab came back");
+    assert_eq!(app.docs[&id].doc.rope.to_string(), text);
+    assert!(app.docs[&id].doc.is_dirty());
+}
+
 #[test]
 fn word_wrap_keeps_clicks_on_the_right_cell() {
     let dir = temp_dir("wrap");
@@ -685,4 +777,494 @@ fn large_file_stays_responsive() {
     ui.cmd(Command::ToggleWordWrap);
     eprintln!("turn on word wrap: {:?}", t.elapsed());
     measure(&mut ui, "typing with wrap", 5, &mut |ui| ui.typed("z"));
+}
+
+#[test]
+fn folds_outline_and_breadcrumbs_come_from_the_syntax_tree() {
+    let dir = temp_dir("tree-sitter");
+    let p = dir.join("a.rs");
+    // Indentation here is deliberately no help.
+    std::fs::write(&p, "fn um() {\nlet a = 1;\nlet b = 2;\n}\nstruct S {\nx: u8,\ny: u8,\n}\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.app.refresh_symbols();
+    ui.cmd(Command::FoldAll);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(t.folds.ranges, vec![(0, 2), (4, 6)]);
+    let names: Vec<_> = e.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["um", "S"]);
+    ui.cmd(Command::UnfoldAll);
+    ui.app.jump_to(5, 0);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(crate::ui::sidebar::current_symbols(e, t), vec!["S"]);
+    ui.app.jump_to(3, 0);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(crate::ui::sidebar::current_symbols(e, t), vec!["um"]);
+    // Typing keeps it current.
+    ui.app.jump_to(8, 0);
+    ui.typed("fn dois() {}");
+    ui.app.refresh_symbols();
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    ui.app.refresh_symbols();
+    let names: Vec<_> = ui.app.active().unwrap().1.symbols.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, vec!["um", "S", "dois"]);
+}
+
+#[test]
+fn vim_mode_edits_through_the_real_key_path() {
+    use tinta_core::vim::Mode;
+    let (mut ui, p) = Ui::with_file();
+    assert!(!ui.app.settings.vim_mode);
+    ui.cmd(Command::ToggleVim);
+    // Normal mode: letters are commands, and don't get typed.
+    ui.typed("jwQ");
+    assert_eq!(ui.text(), SOURCE);
+    assert_eq!(ui.head(), (1, 4));
+    ui.typed("dw");
+    assert!(ui.text().contains("\n    alpha = 1;"), "{}", ui.text());
+    ui.typed("u");
+    assert_eq!(ui.text(), SOURCE);
+    // Insert goes through the editor's own typing.
+    ui.typed("ifoo(");
+    assert_eq!(ui.app.vim.mode, Mode::Insert);
+    assert!(ui.text().contains("    foo(let"), "{}", ui.text());
+    ui.key("escape", Modifiers::empty(), None);
+    assert_eq!(ui.app.vim.mode, Mode::Normal);
+    ui.typed("u");
+    assert_eq!(ui.text(), SOURCE, "all that typing undoes as one");
+    // Visual selection shows on screen as the document's selection.
+    ui.typed("viw");
+    assert_eq!(ui.selection_text(), "let");
+    ui.key("escape", Modifiers::empty(), None);
+    assert_eq!(ui.selection_text(), "");
+    // Shortcuts it doesn't claim still work.
+    ui.key("p", Modifiers::CTRL, None);
+    assert!(ui.app.palette.is_some());
+    ui.key("escape", Modifiers::empty(), None);
+    assert!(ui.app.palette.is_none());
+    // The command line writes the file.
+    ui.typed("ix");
+    ui.key("escape", Modifiers::empty(), None);
+    ui.typed(":");
+    assert!(ui.app.vim_line.is_some());
+    assert_eq!(ui.app.focus, Focus::Input);
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Input("w".into())));
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Submit));
+    ui.frame();
+    assert_eq!(ui.app.focus, Focus::Editor);
+    assert!(std::fs::read_to_string(&p).unwrap().contains("lext alpha"), "the caret was on the t of `let`");
+    // Searching lights up its matches, and :noh puts them out.
+    ui.typed("/");
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Input("alpha".into())));
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Submit));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), 2);
+    ui.typed(":");
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Input("noh".into())));
+    let _ = ui.app.update(Message::Vim(crate::app::VimMsg::Submit));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), 0);
+    // A mouse selection is a visual selection.
+    let a = ui.cell(0, 0);
+    let b = ui.cell(0, 2);
+    ui.move_to(a);
+    ui.press(mouse::Button::Left);
+    ui.move_to(b);
+    ui.release(mouse::Button::Left);
+    assert_eq!(ui.app.vim.mode, Mode::Visual);
+    ui.typed("d");
+    assert!(ui.text().starts_with(" main()"), "{}", ui.text());
+    ui.cmd(Command::ToggleVim);
+}
+
+#[test]
+fn vim_on_a_read_only_buffer_moves_but_does_not_edit() {
+    let (mut ui, _) = Ui::with_file();
+    ui.cmd(Command::ToggleVim);
+    ui.app.active_mut().unwrap().1.doc.readonly = true;
+    ui.typed("jddxix");
+    assert_eq!(ui.text(), SOURCE);
+    assert_eq!(ui.head().0, 1, "j moved");
+    assert_eq!(ui.app.vim.mode, tinta_core::vim::Mode::Normal);
+    ui.cmd(Command::ToggleVim);
+}
+
+#[test]
+fn side_by_side_diff_opens_scrolls_and_jumps() {
+    let dir = temp_dir("diff");
+    let p = dir.join("a.rs");
+    let old: String = (0..200).map(|i| format!("linha {i}\n")).collect();
+    std::fs::write(&p, &old).unwrap();
+    let mut ui = Ui::new(vec![p.clone()]);
+    ui.app.jump_to(150, 0);
+    ui.typed("mudou ");
+    ui.app.jump_to(5, 0);
+    ui.typed("cedo ");
+    ui.cmd(Command::CompareSaved);
+    let tab = ui.app.active_tab_id().unwrap();
+    assert_eq!(ui.app.tabs[&tab].kind, crate::state::TabKind::Diff);
+    let hunks = ui.app.tabs[&tab].diff.as_ref().unwrap().hunks.clone();
+    assert_eq!(hunks, vec![5, 150]);
+    ui.frame();
+    // The second change, then wrapping around to the first.
+    ui.cmd(Command::NextChange);
+    let y = ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y;
+    assert!(y > 100.0 * ui.app.metrics.line_h, "{y}");
+    ui.cmd(Command::NextChange);
+    assert_eq!(ui.app.tabs[&tab].diff.as_ref().unwrap().current, Some(0));
+    // Keys scroll, and don't try to edit anything.
+    let before = ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y;
+    ui.key("down", Modifiers::empty(), None);
+    assert_eq!(ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y, before + ui.app.metrics.line_h);
+    ui.typed("x");
+    ui.key("end", Modifiers::empty(), None);
+    ui.frame();
+    // Wheel, through the real widget.
+    ui.key("home", Modifiers::empty(), None);
+    ui.move_to(Point::new(SIZE.width - 200.0, 300.0));
+    ui.send(vec![Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -2.0 } })]);
+    assert!(ui.app.tabs[&tab].diff.as_ref().unwrap().scroll_y > 0.0);
+    // Double click on the new side goes to the file, at that line.
+    let row_y = 300.0;
+    let p2 = Point::new(SIZE.width - 200.0, row_y);
+    ui.click_at(p2);
+    ui.click_at(p2);
+    let (t, e) = ui.app.active().unwrap();
+    assert_eq!(t.kind, crate::state::TabKind::Text);
+    assert_eq!(e.doc.file_name(), "a.rs");
+    assert!(e.doc.char_to_line(t.cursors.head()) > 0);
+    // Comparing again replaces the view instead of piling up tabs.
+    let n = ui.app.tabs.len();
+    ui.cmd(Command::CompareSaved);
+    ui.frame();
+    assert_eq!(ui.app.tabs.len(), n);
+}
+
+#[test]
+fn source_control_opens_diffs_against_the_right_versions() {
+    use tinta_core::git as g;
+    let dir = temp_dir("gitdiff");
+    let run = |args: &[&str]| {
+        std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "t@example.com"]);
+    run(&["config", "user.name", "T"]);
+    std::fs::write(dir.join("a.txt"), "um\ndois\n").unwrap();
+    g::stage(&dir, "a.txt").unwrap();
+    g::commit(&dir, "x").unwrap();
+    std::fs::write(dir.join("a.txt"), "um\nDOIS\n").unwrap();
+    g::stage(&dir, "a.txt").unwrap();
+    std::fs::write(dir.join("a.txt"), "um\nDOIS\ntres\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    let _ = ui.app.open_git_diff(dir.clone(), "a.txt".into(), true);
+    ui.frame();
+    let d = ui.app.active().unwrap().0.diff.as_ref().unwrap();
+    assert_eq!(d.left.rope.to_string(), "um\ndois\n");
+    assert_eq!(d.right.rope.to_string(), "um\nDOIS\n");
+    let _ = ui.app.open_git_diff(dir.clone(), "a.txt".into(), false);
+    ui.frame();
+    let d = ui.app.active().unwrap().0.diff.as_ref().unwrap();
+    assert_eq!(d.left.rope.to_string(), "um\nDOIS\n");
+    assert_eq!(d.right.rope.to_string(), "um\nDOIS\ntres\n");
+    assert_eq!((d.added, d.removed), (1, 0));
+}
+
+/// Compiling and starting a debugger can take a while on a slow machine.
+fn wait_long(ui: &mut Ui, mut done: impl FnMut(&App) -> bool) {
+    for _ in 0..3000 {
+        ui.frame();
+        if done(&ui.app) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting");
+}
+
+fn have_gdb_dap() -> bool {
+    tinta_core::dap::resolve_adapter("gdb").is_ok() && std::process::Command::new("cc").arg("--version").output().is_ok()
+}
+
+const DEBUG_PROGRAM: &str = "#include <stdio.h>\n\nstruct ponto { int x; int y; };\n\nint dobro(int n) {\n    int r = n * 2;\n    return r;\n}\n\nint main(void) {\n    struct ponto p = { 3, 4 };\n    int total = dobro(p.x);\n    total += p.y;\n    printf(\"total %d\\n\", total);\n    return 7;\n}\n";
+
+/// A click in the margin to the left of the line numbers, on the text's row.
+fn margin(ui: &Ui, line: usize) -> Point {
+    let c = ui.cell(line, 0);
+    let (t, e) = ui.app.active().unwrap();
+    let g = Geometry::new(e.doc.len_lines(), t.view_w, &ui.app.metrics, &ui.app.settings);
+    Point::new(c.x - g.text_x + 12.0, c.y)
+}
+
+#[test]
+fn debugging_a_program_through_the_interface() {
+    if !have_gdb_dap() {
+        eprintln!("skipped: no gdb with DAP");
+        return;
+    }
+    let dir = temp_dir("debug");
+    let src = dir.join("prog.c");
+    std::fs::write(&src, DEBUG_PROGRAM).unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.frame();
+
+    // A click in the margin sets a breakpoint, and doesn't touch the selection.
+    let before = ui.head();
+    let at = margin(&ui, 5);
+    ui.click_at(at);
+    assert_eq!(ui.head(), before);
+    assert_eq!(ui.app.debug.breakpoints[&src][0].line, 5);
+    // F9 on the printf line.
+    ui.app.jump_to(13, 0);
+    ui.key("f9", Modifiers::empty(), None);
+    assert_eq!(ui.app.debug.breakpoints[&src].iter().map(|b| b.line).collect::<Vec<_>>(), vec![5, 13]);
+    // Clicking again takes it off.
+    let at = margin(&ui, 13);
+    ui.click_at(at);
+    assert_eq!(ui.app.debug.breakpoints[&src].len(), 1);
+
+    // Lines added above move it along with its code.
+    ui.app.jump_to(0, 0);
+    ui.key("enter", Modifiers::empty(), None);
+    assert_eq!(ui.app.debug.breakpoints[&src][0].line, 6);
+    ui.key("backspace", Modifiers::empty(), None);
+    assert_eq!(ui.app.debug.breakpoints[&src][0].line, 5);
+
+    // F5 compiles it through the task panel, and stops at the breakpoint.
+    ui.key("f5", Modifiers::empty(), None);
+    assert_eq!(ui.app.sidebar, Some(crate::app::SidebarView::Debug));
+    wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().is_some_and(|s| !s.variable_rows().is_empty()));
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    let loc = |ui: &Ui| ui.app.debug.session.as_ref().unwrap().exec_location().map(|(_, l, top)| (l, top));
+    assert_eq!(loc(&ui), Some((5, true)));
+    assert_eq!(ui.head().0, 5, "the caret goes to where it stopped");
+    assert_eq!(ui.app.debug.breakpoints[&src][0].state, tinta_core::dap::BpState::Verified);
+
+    // F10 steps, and the panels draw whatever comes.
+    ui.key("f10", Modifiers::empty(), None);
+    let value = |a: &App, path: &str| a.debug.session.as_ref()?.variable_rows().into_iter().find(|r| r.path == path).map(|r| r.value);
+    wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().unwrap().exec_location().is_some_and(|l| l.1 == 6) && value(a, "Locals/r").is_some());
+    assert_eq!(value(&ui.app, "Locals/r").as_deref(), Some("6"));
+
+    // The call stack is clickable: the frame's variables and line come up.
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::SelectFrame(1)));
+    wait_long(&mut ui, |a| value(a, "Locals/total").is_some());
+    assert_eq!(loc(&ui), Some((11, false)));
+    assert_eq!(ui.head().0, 11);
+
+    // Shift+F11 leaves dobro, F11 is a step in rather than full screen.
+    ui.key("f11", Modifiers::empty(), None);
+    assert!(!ui.app.fullscreen, "F11 steps while debugging");
+    wait_long(&mut ui, |a| a.debug.is_stopped());
+
+    // Hovering shows the value, from the debugger and not the language server.
+    let tab = ui.app.active_tab_id().unwrap();
+    ui.app.hover = None;
+    let _ = ui.app.update(Message::Editor(tab, crate::ui::editor_view::EditorEvent::Hover { row: 6, vcol: 11 }));
+    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 6"));
+    // Even over the right half of the letter, where the position rounds to the char after it.
+    ui.app.hover = None;
+    let _ = ui.app.update(Message::Editor(tab, crate::ui::editor_view::EditorEvent::Hover { row: 6, vcol: 12 }));
+    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 6"));
+
+    // The console evaluates.
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Input("2 + 3".into())));
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Submit));
+    wait_long(&mut ui, |a| a.debug.console.iter().any(|l| l.text == "5"));
+
+    // Off to the end: the program's output and its exit code come through, and the session closes.
+    ui.key("f5", Modifiers::empty(), None);
+    wait_long(&mut ui, |a| a.debug.session.is_none());
+    let text: Vec<_> = ui.app.debug.console.iter().map(|l| l.text.as_str()).collect();
+    assert!(text.contains(&"total 10"), "{text:?}");
+    assert!(text.iter().any(|l| l.ends_with(" 7")), "{text:?}");
+    assert!(ui.app.debug.breakpoints[&src][0].line == 5, "the breakpoint stays for next time");
+
+    // Without a session, F11 is full screen again.
+    assert!(!ui.app.debug.is_live());
+    ui.frame();
+}
+
+#[test]
+fn a_failed_build_shows_its_errors_and_does_not_start_anything() {
+    if !have_gdb_dap() {
+        return;
+    }
+    let dir = temp_dir("debugbad");
+    let src = dir.join("ruim.c");
+    std::fs::write(&src, "int main(void) {\n    return nada;\n}\n").unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.key("f5", Modifiers::empty(), None);
+    wait_long(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Tasks));
+    assert!(ui.app.debug.session.is_none());
+    assert!(ui.app.tasks.problems.iter().any(|(p, _)| p.ends_with("ruim.c")), "{:?}", ui.app.tasks.problems);
+}
+
+#[test]
+fn stopping_a_session_lets_the_next_one_run_and_breakpoints_are_remembered() {
+    if !have_gdb_dap() {
+        return;
+    }
+    let dir = temp_dir("debugstop");
+    let src = dir.join("prog.c");
+    std::fs::write(&src, DEBUG_PROGRAM).unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.app.jump_to(5, 0);
+    ui.key("f9", Modifiers::empty(), None);
+    ui.key("f5", Modifiers::empty(), None);
+    wait_long(&mut ui, |a| a.debug.is_stopped());
+    ui.key("f5", Modifiers::SHIFT, None);
+    assert!(ui.app.debug.session.is_none());
+    // A breakpoint set while nothing runs goes in with the next session.
+    ui.app.jump_to(13, 0);
+    ui.key("f9", Modifiers::empty(), None);
+    let saved = ui.app.build_session();
+    assert_eq!(saved.breakpoints[&src].len(), 2);
+    let back: tinta_core::session::Session = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    assert_eq!(back.breakpoints[&src].iter().map(|b| b.line).collect::<Vec<_>>(), vec![5, 13]);
+    // An old session file, from before there were breakpoints, still loads.
+    let mut v = serde_json::to_value(&saved).unwrap();
+    v.as_object_mut().unwrap().remove("breakpoints");
+    v.as_object_mut().unwrap().remove("watches");
+    assert!(serde_json::from_value::<tinta_core::session::Session>(v).is_ok());
+    // Restart goes through a fresh session.
+    ui.key("f5", Modifiers::empty(), None);
+    wait_long(&mut ui, |a| a.debug.is_stopped());
+    let first = ui.app.debug.generation;
+    ui.key("f5", Modifiers::CTRL | Modifiers::SHIFT, None);
+    wait_long(&mut ui, |a| a.debug.generation > first && a.debug.is_stopped());
+    ui.key("f5", Modifiers::SHIFT, None);
+}
+
+#[test]
+fn a_launch_json_pointing_at_nothing_says_so() {
+    if !have_gdb_dap() {
+        return;
+    }
+    let dir = temp_dir("debugmissing");
+    std::fs::create_dir_all(dir.join(".tinta")).unwrap();
+    std::fs::write(dir.join(".tinta/launch.json"), r#"[{ "name": "x", "type": "gdb", "program": "build/nao_existe" }]"#).unwrap();
+    let src = dir.join("a.c");
+    std::fs::write(&src, "int main(void) { return 0; }\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone(), src]);
+    ui.key("f5", Modifiers::empty(), None);
+    assert!(ui.app.debug.session.is_none(), "it doesn't sit there looking like it's running");
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    assert!(ui.app.debug.console.iter().any(|l| l.text.contains("nao_existe")), "{:?}", ui.app.debug.console);
+    assert!(ui.app.toast.is_some());
+}
+
+#[test]
+fn saying_what_is_missing_when_a_language_has_no_debugger() {
+    let dir = temp_dir("debugnone");
+    let p = dir.join("notas.md");
+    std::fs::write(&p, "# oi\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.key("f5", Modifiers::empty(), None);
+    assert!(ui.app.debug.session.is_none());
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    assert!(ui.app.debug.console.iter().any(|l| l.text.contains("launch.json")), "{:?}", ui.app.debug.console);
+    // A file with no name can't hold a breakpoint, and says why.
+    ui.cmd(Command::NewFile);
+    ui.key("f9", Modifiers::empty(), None);
+    assert!(ui.app.debug.breakpoints.is_empty());
+    assert!(ui.app.toast.is_some());
+}
+
+/// Menus are surfaces of their own, and closing one asks the same question as closing the window.
+#[test]
+fn a_build_task_runs_and_its_errors_mark_the_file() {
+    let dir = temp_dir("task");
+    std::fs::write(dir.join("a.c"), "int main(void) {\n  return nada;\n}\n").unwrap();
+    std::fs::write(dir.join("Makefile"), "all:\n\t@echo 'a.c:2:10: error: nada nao existe' >&2; exit 3\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    // These marks come from the build; clangd, if installed, would add its own.
+    ui.app.settings.lsp_enabled = false;
+    let _ = ui.app.open_path(&dir.join("a.c"));
+    ui.frame();
+    ui.cmd(Command::RunBuild);
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Tasks));
+    wait_for(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert_eq!(ui.app.tasks.exit, Some(Err(Some(2))), "what make says when a recipe fails");
+    assert_eq!(ui.app.tasks.problems.len(), 1);
+    let (_, e) = ui.app.active().unwrap();
+    assert_eq!(e.diags.len(), 1, "the open file got the mark");
+    assert_eq!(e.diags[0].message, "nada nao existe");
+    assert_eq!(e.doc.slice_string(e.diags[0].start, e.diags[0].end), "nada");
+    assert!(ui.app.problems().iter().any(|p| p.4 == "nada nao existe"));
+    // F6 goes there.
+    ui.app.jump_to(0, 0);
+    ui.cmd(Command::NextTaskProblem);
+    assert_eq!(ui.head(), (1, 9));
+    // A line of output with a place in it can be clicked.
+    let i = ui.app.tasks.lines.iter().position(|l| l.location.is_some()).unwrap();
+    ui.app.jump_to(0, 0);
+    let _ = ui.app.update(Message::Task(crate::app::TaskMsg::Jump(i)));
+    ui.frame();
+    assert_eq!(ui.head(), (1, 9));
+    // The next run starts clean.
+    std::fs::write(dir.join("Makefile"), "all:\n\t@echo ok\n").unwrap();
+    ui.cmd(Command::RerunTask);
+    wait_for(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert_eq!(ui.app.tasks.exit, Some(Ok(())));
+    assert!(ui.app.active().unwrap().1.diags.is_empty());
+    assert!(ui.app.tasks.lines.iter().any(|l| l.text == "ok"));
+}
+
+#[test]
+fn a_running_task_can_be_stopped() {
+    let dir = temp_dir("stop");
+    std::fs::write(dir.join("Makefile"), "all:\n\t@echo inicio; sleep 60; echo fim\n").unwrap();
+    let mut ui = Ui::new(vec![dir]);
+    ui.cmd(Command::RunBuild);
+    wait_for(&mut ui, |a| a.tasks.lines.iter().any(|l| l.text == "inicio"));
+    let started = Instant::now();
+    ui.cmd(Command::StopTask);
+    wait_for(&mut ui, |a| a.tasks.exit.is_some());
+    assert!(started.elapsed().as_secs() < 5, "the sleep underneath went too");
+    assert!(!ui.app.tasks.lines.iter().any(|l| l.text == "fim"));
+}
+
+#[test]
+fn ctrl_click_in_the_terminal_follows_a_location() {
+    let dir = temp_dir("link");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/a.rs"), "um\ndois\ntres\n").unwrap();
+    let mut ui = Ui::new(vec![dir]);
+    let _ = ui.app.update(Message::TermLink("erro em src/a.rs:3:2 agora".into(), 12));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.doc.file_name(), "a.rs");
+    assert_eq!(ui.head(), (2, 1));
+    // Nothing there: nothing happens, and it doesn't matter where the shell has wandered off to.
+    let _ = ui.app.update(Message::TermLink("sem nada aqui".into(), 3));
+    ui.frame();
+    assert_eq!(ui.app.tabs.len(), 1);
+}
+
+#[test]
+fn closing_a_menu_popup_does_not_quit() {
+    let (ui, _) = Ui::with_file();
+    assert!(ui.app.on_close_requested(window::Id::unique()).is_none());
+    let main = ui.app.core.main_window_id();
+    if let Some(id) = main {
+        assert!(ui.app.on_close_requested(id).is_some());
+    }
+}
+
+#[test]
+fn menu_labels_are_really_drawn() {
+    let (ui, _) = Ui::with_file();
+    let el: Element<'_, Message> = crate::ui::menu::menu_bar(&ui.app);
+    let mut r = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
+    let mut bar = UserInterface::build(el, Size::new(1000.0, 48.0), user_interface::Cache::new(), &mut r);
+    let mut msgs = Vec::new();
+    let mut clip = clipboard::Null;
+    let cursor = mouse::Cursor::Available(Point::new(900.0, 40.0));
+    let _ = bar.update(&[Event::Window(window::Event::RedrawRequested(Instant::now()))], cursor, &mut r, &mut clip, &mut msgs);
+    let style = cosmic::iced::advanced::renderer::Style { icon_color: cosmic::iced::Color::WHITE, text_color: cosmic::iced::Color::WHITE, scale_factor: 1.0 };
+    bar.draw(&mut r, &ui.theme, &style, cursor);
+    drop(bar);
+    let Renderer::Secondary(sk) = &mut r else { panic!() };
+    let texts: Vec<String> = sk.layers().iter().flat_map(|l| l.text.iter().map(|t| format!("{t:?}").chars().take(160).collect::<String>())).collect();
+    assert_eq!(texts.len(), 10, "{texts:?}");
 }

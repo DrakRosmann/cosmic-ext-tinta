@@ -10,6 +10,8 @@ use tinta_core::{Cursors, Selection, find};
 
 pub const FIND_INPUT: &str = "find-input";
 pub const REPLACE_INPUT: &str = "replace-input";
+/// How many matches get highlighted. Replacing isn't limited by this.
+pub const MAX_SHOWN_MATCHES: usize = 100_000;
 
 impl App {
     pub fn edit_opts(&self) -> EditOpts {
@@ -196,7 +198,7 @@ impl App {
 
     pub fn on_editor_event(&mut self, id: crate::state::TabId, ev: EditorEvent) -> Task<Message> {
         // A click in another split makes it the active one.
-        if matches!(ev, EditorEvent::Press { .. } | EditorEvent::GutterSelect { .. } | EditorEvent::FoldToggle { .. } | EditorEvent::SecondaryPress { .. }) {
+        if matches!(ev, EditorEvent::Press { .. } | EditorEvent::BreakpointToggle { .. } | EditorEvent::GutterSelect { .. } | EditorEvent::FoldToggle { .. } | EditorEvent::SecondaryPress { .. }) {
             if let Some(g) = self.groups.iter().position(|g| g.active_tab() == Some(id)) {
                 self.active_group = g;
             }
@@ -233,7 +235,11 @@ impl App {
                 self.clamp_scroll(id);
                 Task::none()
             }
-            EditorEvent::Press { row, vcol, clicks, mods, button } => self.on_press(id, row, vcol, clicks, mods, button),
+            EditorEvent::Press { row, vcol, clicks, mods, button } => {
+                let t = self.on_press(id, row, vcol, clicks, mods, button);
+                self.vim_after_mouse();
+                t
+            }
             EditorEvent::Drag { row, vcol, mods } => {
                 self.on_drag(id, row, vcol, mods);
                 Task::none()
@@ -243,11 +249,27 @@ impl App {
                     t.column_anchor = None;
                     t.drag_origin = None;
                 }
+                self.vim_after_mouse();
                 Task::none()
             }
             EditorEvent::FoldToggle { row } => {
+                self.sync_active_structure();
                 self.toggle_fold_at_row(id, row);
                 Task::none()
+            }
+            EditorEvent::BreakpointToggle { row } => {
+                let target = self.tabs.get(&id).and_then(|t| {
+                    let e = self.docs.get(&t.doc)?;
+                    Some((e.doc.path.clone(), t.map.row(&e.doc, row).line as usize))
+                });
+                match target {
+                    Some((Some(path), line)) => {
+                        self.toggle_breakpoint_at(&path, line);
+                        Task::none()
+                    }
+                    Some((None, _)) => self.toast(crate::i18n::tr("Save the file first")),
+                    None => Task::none(),
+                }
             }
             EditorEvent::GutterSelect { row, extend } => {
                 self.gutter_select(id, row, extend);
@@ -477,11 +499,16 @@ impl App {
 
     /// Recomputes matches when the query or the text changed.
     pub fn refresh_find_matches(&mut self) {
-        if !self.find.open {
+        // Vim's search lights up its matches without the find bar.
+        let vim_q = self.vim_highlight.clone().filter(|_| !self.find.open);
+        if !self.find.open && vim_q.is_none() {
             return;
         }
         let gen_id = self.find.generation;
-        let q = self.find.query.clone();
+        let q = match vim_q {
+            Some(pattern) => find::Query { pattern, regex: true, case_sensitive: true, whole_word: false },
+            None => self.find.query.clone(),
+        };
         let sel_ranges = self.find.in_selection.clone();
         let Some(tab_id) = self.active_tab_id() else { return };
         let Some(t) = self.tabs.get(&tab_id) else { return };
@@ -500,7 +527,7 @@ impl App {
         }
         match q.compile() {
             Ok(re) => {
-                let mut m = find::find_all(&e.doc, &re, 100_000);
+                let mut m = find::find_all(&e.doc, &re, MAX_SHOWN_MATCHES);
                 if let Some(ranges) = &sel_ranges {
                     m.retain(|x| ranges.iter().any(|r| r.0 <= x.0 && x.1 <= r.1));
                 }
@@ -618,13 +645,18 @@ impl App {
         let q = self.find.query.clone();
         let Ok(re) = q.compile() else { return Task::none() };
         let replacement = self.find.replacement.clone();
+        let ranges = self.find.in_selection.clone();
         let Some((_, e)) = self.active() else { return Task::none() };
-        let n = e.matches.len();
+        // The highlighted list may be cut short; this one never is.
+        let mut all = find::find_all(&e.doc, &re, usize::MAX);
+        if let Some(r) = &ranges {
+            all.retain(|x| r.iter().any(|s| s.0 <= x.0 && x.1 <= s.1));
+        }
+        let n = all.len();
         if n == 0 {
             return Task::none();
         }
-        let edits: Vec<tinta_core::Edit> = e
-            .matches
+        let edits: Vec<tinta_core::Edit> = all
             .iter()
             .map(|&(a, b)| tinta_core::Edit::new(a, b, find::expand(&re, &q, &e.doc.slice_string(a, b), &replacement)))
             .collect();

@@ -18,7 +18,7 @@ jobs:
       - name: Bibliotecas do sistema e um servidor de linguagem para os testes
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends gdb python3-debugpy \
             cmake pkg-config libxkbcommon-dev libwayland-dev libexpat1-dev libfontconfig-dev \
             libfreetype-dev libvulkan-dev clangd fonts-noto-mono fonts-noto-core
 

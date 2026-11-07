@@ -69,7 +69,7 @@ commands! {
     JoinLines, "line.join", "Join Lines", "Juntar linhas", ["ctrl+shift+j"];
     IndentLines, "line.indent", "Indent Lines", "Indentar linhas", ["ctrl+]"];
     OutdentLines, "line.outdent", "Outdent Lines", "Desindentar linhas", ["ctrl+["];
-    SortAsc, "line.sortAsc", "Sort Lines Ascending", "Ordenar linhas (A→Z)", ["f9"];
+    SortAsc, "line.sortAsc", "Sort Lines Ascending", "Ordenar linhas (A→Z)", [];
     SortDesc, "line.sortDesc", "Sort Lines Descending", "Ordenar linhas (Z→A)", [];
     SortCaseless, "line.sortCaseless", "Sort Lines Ignoring Case", "Ordenar linhas sem diferenciar maiúsculas", [];
     ReverseLines, "line.reverse", "Reverse Lines", "Inverter ordem das linhas", [];
@@ -128,12 +128,13 @@ commands! {
     NextBookmark, "bookmark.next", "Next Bookmark", "Próximo marcador", ["f8"];
     PrevBookmark, "bookmark.prev", "Previous Bookmark", "Marcador anterior", ["shift+f8"];
     ClearBookmarks, "bookmark.clear", "Clear Bookmarks", "Limpar marcadores", [];
-    NextChange, "git.nextChange", "Next Change", "Próxima alteração", ["alt+f3"];
-    PrevChange, "git.prevChange", "Previous Change", "Alteração anterior", ["shift+alt+f3"];
+    NextChange, "git.nextChange", "Next Change", "Próxima alteração", ["alt+f3", "f7"];
+    PrevChange, "git.prevChange", "Previous Change", "Alteração anterior", ["shift+alt+f3", "shift+f7"];
     RevertHunk, "git.revertHunk", "Revert Change Under Cursor", "Reverter alteração sob o cursor", [];
     // Folding
     Fold, "fold.fold", "Fold", "Dobrar", ["ctrl+shift+["];
     Unfold, "fold.unfold", "Unfold", "Desdobrar", ["ctrl+shift+]"];
+    FoldToggle, "fold.toggle", "Toggle Fold", "Dobrar/desdobrar", [];
     FoldAll, "fold.all", "Fold All", "Dobrar tudo", ["ctrl+k ctrl+0"];
     UnfoldAll, "fold.none", "Unfold All", "Desdobrar tudo", ["ctrl+k ctrl+j"];
     // Code intelligence
@@ -165,6 +166,21 @@ commands! {
     FocusNextGroup, "view.nextGroup", "Focus Next Editor Group", "Focar próximo grupo de editores", ["ctrl+k ctrl+right"];
     FocusPrevGroup, "view.prevGroup", "Focus Previous Editor Group", "Focar grupo de editores anterior", ["ctrl+k ctrl+left"];
     CloseGroup, "view.closeGroup", "Close Editor Group", "Fechar grupo de editores", [];
+    DebugStart, "debug.start", "Start or Continue Debugging", "Iniciar ou continuar a depuração", ["f5"];
+    DebugStop, "debug.stop", "Stop Debugging", "Parar a depuração", ["shift+f5"];
+    DebugRestart, "debug.restart", "Restart Debugging", "Reiniciar a depuração", ["ctrl+shift+f5"];
+    DebugPause, "debug.pause", "Pause", "Pausar", [];
+    StepOver, "debug.stepOver", "Step Over", "Próxima linha", ["f10"];
+    StepInto, "debug.stepIn", "Step Into", "Entrar na função", [];
+    StepOut, "debug.stepOut", "Step Out", "Sair da função", ["shift+f11"];
+    ToggleBreakpoint, "debug.breakpoint", "Toggle Breakpoint", "Alternar breakpoint", ["f9"];
+    BreakpointCondition, "debug.condition", "Conditional Breakpoint…", "Breakpoint condicional…", ["shift+f9"];
+    RemoveBreakpoints, "debug.removeBreakpoints", "Remove All Breakpoints", "Remover todos os breakpoints", [];
+    ShowDebug, "view.debug", "Show Run and Debug", "Mostrar execução e depuração", [];
+    ShowDebugConsole, "view.debugConsole", "Show Debug Console", "Mostrar console de depuração", ["ctrl+shift+y"];
+    DebugConfigure, "debug.configure", "Edit launch.json", "Editar launch.json", [];
+    DebugSelectConfig, "debug.select", "Choose Debug Configuration", "Escolher configuração de depuração", [];
+    ToggleVim, "view.vim", "Toggle Vim Mode", "Alternar modo Vim", [];
     ToggleWordWrap, "view.wrap", "Toggle Word Wrap", "Alternar quebra de linha", ["alt+z"];
     ToggleMinimap, "view.minimap", "Toggle Minimap", "Alternar minimapa", [];
     ToggleWhitespace, "view.whitespace", "Toggle Whitespace", "Alternar espaços visíveis", [];
@@ -191,6 +207,14 @@ commands! {
     GitCheckout, "git.checkout", "Git: Switch Branch…", "Git: trocar de branch…", [];
     GitDiffFile, "git.diff", "Git: Show Changes in File", "Git: mostrar alterações do arquivo", [];
     CompareSaved, "file.compareSaved", "Compare with Saved", "Comparar com o arquivo salvo", [];
+    // Tasks
+    RunBuild, "task.build", "Run Build Task", "Executar tarefa de build", ["ctrl+shift+b"];
+    RunTask, "palette.tasks", "Run Task…", "Executar tarefa…", [];
+    RerunTask, "task.rerun", "Rerun Last Task", "Repetir última tarefa", [];
+    StopTask, "task.stop", "Stop Task", "Parar tarefa", [];
+    ShowTasks, "view.tasks", "Show Task Output", "Mostrar saída das tarefas", [];
+    NextTaskProblem, "task.nextProblem", "Next Build Problem", "Próximo problema do build", ["f6"];
+    PrevTaskProblem, "task.prevProblem", "Previous Build Problem", "Problema anterior do build", ["shift+f6"];
     // Document
     SetLf, "doc.lf", "Line Endings: LF", "Fim de linha: LF", [];
     SetCrlf, "doc.crlf", "Line Endings: CRLF", "Fim de linha: CRLF", [];

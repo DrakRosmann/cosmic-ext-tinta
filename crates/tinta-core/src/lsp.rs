@@ -440,18 +440,45 @@ impl Client {
         );
     }
 
-    pub fn did_change(&self, path: &Path, doc: &Document) {
+    /// How the server wants changes: `true` for one at a time, `false` for the whole text.
+    pub fn takes_incremental(&self) -> bool {
+        let sync = self.capabilities.get("textDocumentSync");
+        let kind = match sync {
+            Some(Value::Number(n)) => n.as_u64(),
+            Some(Value::Object(o)) => o.get("change").and_then(Value::as_u64),
+            _ => None,
+        };
+        kind == Some(2)
+    }
+
+    /// Tells the server what changed. `changes` is `None` when only the whole text will do.
+    pub fn did_change(&self, path: &Path, doc: &Document, changes: Option<Vec<crate::buffer::LspChange>>) {
         let version = {
             let Ok(mut v) = self.versions.lock() else { return };
             let e = v.entry(path.to_path_buf()).or_insert(1);
             *e += 1;
             *e
         };
+        let content = match changes {
+            Some(list) if self.takes_incremental() => list
+                .into_iter()
+                .map(|c| {
+                    json!({
+                        "range": {
+                            "start": { "line": c.start.line, "character": c.start.character },
+                            "end": { "line": c.end.line, "character": c.end.character },
+                        },
+                        "text": c.text,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![json!({ "text": doc.rope.to_string() })],
+        };
         self.notify(
             "textDocument/didChange",
             json!({
                 "textDocument": { "uri": path_to_uri(path), "version": version },
-                "contentChanges": [{ "text": doc.rope.to_string() }],
+                "contentChanges": content,
             }),
         );
     }
@@ -1081,6 +1108,20 @@ mod tests {
         let Event::Reply { reply, .. } = wait(&rx, |e| matches!(e, Event::Reply { id: i, .. } if *i == id)) else { panic!() };
         let Reply::Symbols(s) = reply else { panic!("{reply:?}") };
         assert!(s.iter().any(|x| x.name.contains("main")));
+
+        // One small edit: the server has to end up with the same text as us.
+        assert!(c.takes_incremental(), "clangd takes changes one at a time");
+        let mut doc = doc;
+        doc.track_lsp = true;
+        let mut cur = crate::Cursors::default();
+        let at = doc.pos(2, 2);
+        doc.apply(vec![crate::Edit::insert(at, "int nada = 0;\n  ")], &mut cur, crate::EditKind::Other, |_, _| {});
+        let changes = doc.take_lsp_changes();
+        assert_eq!(changes.as_ref().unwrap().len(), 1);
+        c.did_change(&file, &doc, changes);
+        // The undeclared name is declared now, so its error goes away.
+        let Event::Diagnostics { items, .. } = wait(&rx, |e| matches!(e, Event::Diagnostics { items, .. } if !items.iter().any(|d| d.message.contains("nada")))) else { panic!() };
+        assert!(items.is_empty(), "{items:?}");
 
         drop(c);
         wait(&rx, |e| matches!(e, Event::Exited { .. }));

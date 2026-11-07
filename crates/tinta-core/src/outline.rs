@@ -11,6 +11,8 @@ pub struct Symbol {
     pub kind: &'static str,
     pub line: usize,
     pub depth: usize,
+    /// Last line, when known from the syntax tree.
+    pub end: Option<usize>,
 }
 
 type Pat = (&'static str, Regex);
@@ -124,6 +126,11 @@ fn patterns(language: &str) -> &'static [Pat] {
 const NOT_FUNCTIONS: &[&str] = &["if", "for", "while", "switch", "catch", "return", "else", "do", "sizeof", "new", "throw"];
 
 pub fn symbols(doc: &Document) -> Vec<Symbol> {
+    if let Some(st) = &doc.structure
+        && st.is_current(doc.revision)
+    {
+        return st.symbols().to_vec();
+    }
     let lang = doc.language.name.as_str();
     let total = doc.len_lines().min(200_000);
     let mut out = Vec::new();
@@ -144,6 +151,7 @@ pub fn symbols(doc: &Document) -> Vec<Symbol> {
                     kind: "heading",
                     line: l,
                     depth: hashes - 1,
+                    end: None,
                 });
             }
         }
@@ -163,7 +171,7 @@ pub fn symbols(doc: &Document) -> Vec<Symbol> {
                     continue;
                 }
                 let indent = crate::display::line_indent_vcols(doc, l, tab);
-                out.push(Symbol { name: name.to_string(), kind, line: l, depth: indent / tab });
+                out.push(Symbol { name: name.to_string(), kind, line: l, depth: indent / tab, end: None });
                 break;
             }
         }

@@ -1,7 +1,6 @@
 //! What each command does.
 
 use super::{App, BoolSetting, DialogMsg, DialogState, Focus, Message, PaletteMode, PanelView, SettingMsg, SidebarView};
-use crate::i18n::tr;
 use crate::state::{TabId, TabKind};
 use cosmic::app::Task;
 use std::path::PathBuf;
@@ -136,6 +135,7 @@ impl App {
             C::AddCursorAbove => self.select_op(|d, c, m| cmds::add_cursor_vertical(d, c, m, false)),
             C::AddCursorBelow => self.select_op(|d, c, m| cmds::add_cursor_vertical(d, c, m, true)),
             C::ExpandSelection => {
+                self.sync_active_structure();
                 if let Some((t, e)) = self.active_mut() {
                     t.expand_stack.push(t.cursors.clone());
                     t.cursors.map(|s| cmds::expand_selection(&e.doc, s));
@@ -204,9 +204,15 @@ impl App {
             C::NextChange => self.change_step(true),
             C::PrevChange => self.change_step(false),
             C::RevertHunk => self.revert_hunk(),
-            C::Fold => self.fold_at_cursor(),
+            C::Fold => {
+                self.sync_active_structure();
+                self.fold_at_cursor();
+            }
             C::Unfold => self.unfold_at_cursor(),
-            C::FoldAll => self.fold_all(),
+            C::FoldAll => {
+                self.sync_active_structure();
+                self.fold_all();
+            }
             C::UnfoldAll => {
                 if let Some((t, _)) = self.active_mut() {
                     t.folds.clear();
@@ -270,6 +276,51 @@ impl App {
                     t.push(self.request_close_tab(id));
                 }
                 return Task::batch(t);
+            }
+            C::DebugStart => return self.debug_start(false),
+            C::DebugStop => self.debug_stop(),
+            C::DebugRestart => return self.debug_restart(),
+            C::DebugPause => {
+                if let Some(s) = &mut self.debug.session {
+                    s.pause();
+                }
+            }
+            C::StepOver => return self.debug_step(|s| s.step_over()),
+            C::StepInto => return self.debug_step(|s| s.step_in()),
+            C::StepOut => {
+                if let Some(s) = &mut self.debug.session {
+                    s.step_out();
+                }
+            }
+            C::ToggleBreakpoint => return self.toggle_breakpoint_here(),
+            C::BreakpointCondition => return self.start_breakpoint_condition(),
+            C::RemoveBreakpoints => {
+                let paths: Vec<_> = self.debug.breakpoints.keys().cloned().collect();
+                self.debug.breakpoints.clear();
+                if let Some(s) = self.debug.session.as_mut().filter(|s| s.is_live()) {
+                    for p in paths {
+                        s.send_breakpoints(&p, &[]);
+                    }
+                }
+            }
+            C::ShowDebug => return self.show_sidebar(SidebarView::Debug),
+            C::ShowDebugConsole => self.panel = Some(PanelView::Debug),
+            C::DebugConfigure => return self.debug_configure(),
+            C::DebugSelectConfig => return self.debug_pick_config(),
+            C::ToggleVim => {
+                self.settings.vim_mode = !self.settings.vim_mode;
+                self.vim = tinta_core::vim::Vim::new();
+                self.vim_reset();
+                self.persist_settings();
+            }
+            C::FoldToggle => {
+                self.sync_active_structure();
+                let folded = self.active().is_some_and(|(t, e)| t.folds.is_folded(e.doc.char_to_line(t.cursors.head())));
+                if folded {
+                    self.unfold_at_cursor();
+                } else {
+                    self.fold_at_cursor();
+                }
             }
             C::ToggleWordWrap => {
                 self.settings.word_wrap = !self.settings.word_wrap;
@@ -353,6 +404,13 @@ impl App {
             C::GitCheckout => return self.open_palette(PaletteMode::Branch),
             C::GitDiffFile => return self.show_file_diff(),
             C::CompareSaved => return self.compare_with_saved(),
+            C::RunBuild => return self.run_default_build(),
+            C::RunTask => return self.run_task_picker(),
+            C::RerunTask => return self.rerun_task(),
+            C::StopTask => self.stop_task(),
+            C::ShowTasks => self.panel = Some(PanelView::Tasks),
+            C::NextTaskProblem => return self.task_problem_step(true),
+            C::PrevTaskProblem => return self.task_problem_step(false),
             C::SetLf => self.set_eol(LineEnding::Lf),
             C::SetCrlf => self.set_eol(LineEnding::CrLf),
             C::IndentSpaces => self.set_indent_kind(true),
@@ -489,6 +547,9 @@ impl App {
     }
 
     fn change_step(&mut self, forward: bool) {
+        if self.diff_step(forward) {
+            return;
+        }
         let Some((t, e)) = self.active() else { return };
         let l = e.doc.char_to_line(t.cursors.head());
         let h = if forward { e.git_diff.next_hunk(l) } else { e.git_diff.prev_hunk(l) };
@@ -520,6 +581,8 @@ impl App {
         let mut target = None;
         if display::is_foldable(&e.doc, line, tab) && !t.folds.is_folded(line) {
             target = Some(line);
+        } else if let Some(h) = display::enclosing_headers(&e.doc, line, tab, 1).pop().filter(|_| e.doc.structure.as_ref().is_some_and(|s| s.has_tree())) {
+            target = Some(h);
         } else {
             let base = display::line_indent_vcols(&e.doc, line, tab);
             let mut l = line;
@@ -731,6 +794,11 @@ impl App {
                         self.index_files();
                     }
                     BoolSetting::Lsp => s.lsp_enabled = v,
+                    BoolSetting::Vim => {
+                        s.vim_mode = v;
+                        self.vim = tinta_core::vim::Vim::new();
+                        self.vim_reset();
+                    }
                 }
             }
         }
@@ -785,6 +853,10 @@ impl App {
                     Some(DialogState::RenamePath(p)) => self.rename_path(p, &input),
                     Some(DialogState::TrashPath(p)) => self.trash_path(p),
                     Some(DialogState::RenameSymbol) => self.do_rename(input),
+                    Some(DialogState::BreakpointCondition(path, line)) => {
+                        self.set_breakpoint_condition(path, line, input);
+                        Task::none()
+                    }
                     Some(DialogState::ConfirmDiscard(entry)) => self.git_discard(entry),
                     _ => Task::none(),
                 }
@@ -926,16 +998,6 @@ impl App {
         }
         self.reload_explorer();
         Task::none()
-    }
-
-    fn compare_with_saved(&mut self) -> Task<Message> {
-        let Some((_, e)) = self.active() else { return Task::none() };
-        let Some(p) = e.doc.path.clone() else { return Task::none() };
-        let saved = std::fs::read_to_string(&p).unwrap_or_default();
-        let now = e.doc.rope.to_string();
-        let name = e.doc.file_name();
-        let text = core_git::unified(&format!("{name} (saved)"), &name, &saved, &now);
-        self.open_generated(format!("{}: {name}", tr("Changes in")), &text, "Diff")
     }
 }
 

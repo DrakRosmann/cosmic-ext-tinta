@@ -134,6 +134,10 @@ impl App {
             // ...but a text field also claims Escape and the arrows, and those drive what it's in.
             let overlay = self.palette.is_some() && matches!(ev.name.as_str(), "escape" | "up" | "down" | "pageup" | "pagedown");
             let closes = ev.name == "escape" && (self.dialog.is_some() || self.find.open);
+            if ev.name == "escape" && self.vim_line.take().is_some() {
+                self.focus = Focus::Editor;
+                return cosmic::widget::text_input::focus(cosmic::widget::Id::new("no-such-field"));
+            }
             if !overlay && !closes {
                 // Escape in any other field hands the keyboard back to the text.
                 if ev.name == "escape" {
@@ -151,6 +155,13 @@ impl App {
         }
         if self.palette.is_some() {
             return self.palette_key(&ev);
+        }
+        // F11 steps in while debugging, as everywhere else, and is full screen the rest of the time.
+        if ev.name == "f11" && ev.mods.is_empty() && self.debug.is_live() {
+            return self.run(tinta_core::keymap::Command::StepInto);
+        }
+        if let Some(t) = self.vim_on_key(&ev) {
+            return t;
         }
         if ev.name == "escape" {
             return self.on_escape_key();
@@ -227,6 +238,8 @@ impl App {
                         }
                         self.terminal_key(&ev)
                     }
+                    // In Vim's other modes a key it passed on stops here, or it would get typed.
+                    Focus::Editor if self.settings.vim_mode && !self.vim.is_insert() => Task::none(),
                     Focus::Editor => self.editor_key(&ev),
                     Focus::Input => Task::none(),
                 }
@@ -257,6 +270,9 @@ impl App {
 
     /// Keys with a fixed meaning in the text: the ones not worth remapping.
     fn editor_key(&mut self, ev: &KeyEv) -> Task<Message> {
+        if !ev.mods.control() && !ev.mods.alt() && self.diff_key(&ev.name) {
+            return Task::none();
+        }
         let m = ev.mods;
         let (ctrl, shift, alt) = (m.control(), m.shift(), m.alt());
         let motion = match (ev.name.as_str(), ctrl, alt) {

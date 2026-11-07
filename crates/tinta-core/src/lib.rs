@@ -4,6 +4,8 @@
 pub mod buffer;
 pub mod commands;
 pub mod cursor;
+pub mod dap;
+pub mod diff;
 pub mod display;
 pub mod find;
 pub mod fuzzy;
@@ -15,7 +17,10 @@ pub mod outline;
 pub mod session;
 pub mod settings;
 pub mod snippet;
+pub mod structure;
 pub mod syntax;
+pub mod tasks;
+pub mod vim;
 
 pub use buffer::{Document, Edit, EditKind};
 pub use cursor::{Cursors, Selection};

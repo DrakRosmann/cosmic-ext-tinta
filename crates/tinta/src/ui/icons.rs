@@ -108,3 +108,31 @@ pub fn split() -> icon::Handle {
     bundled(svg!(r#"<rect x="2" y="2.8" width="12" height="10.4" rx="1.5"/><path d="M8 2.8v10.4"/>"#))
 }
 
+
+pub fn debug() -> icon::Handle {
+    bundled(svg!(r#"<path d="M5.2 5.5h5.6a1.2 1.2 0 0 1 1.2 1.2V10a4 4 0 0 1-8 0V6.7a1.2 1.2 0 0 1 1.2-1.2z"/><path d="M5.5 5.5V5a2.5 2.5 0 0 1 5 0v.5M8 8v6M4 8.5H1.8M14.2 8.5H12M4.3 11.8l-2 1.4M11.7 11.8l2 1.4M4.4 6l-1.9-1.6M11.6 6l1.9-1.6"/>"#))
+}
+
+pub fn play() -> icon::Handle {
+    bundled(svg!(r#"<path d="M4.5 2.8v10.4L13 8z"/>"#))
+}
+
+pub fn pause() -> icon::Handle {
+    bundled(svg!(r#"<path d="M5.5 3v10M10.5 3v10"/>"#))
+}
+
+pub fn stop() -> icon::Handle {
+    bundled(svg!(r#"<rect x="3.5" y="3.5" width="9" height="9" rx="1"/>"#))
+}
+
+pub fn step_over() -> icon::Handle {
+    bundled(svg!(r#"<path d="M2.5 8a5.5 5.5 0 0 1 10.3-2.6M13.5 2.5v3h-3"/><circle cx="8" cy="12.5" r="1.3"/>"#))
+}
+
+pub fn step_in() -> icon::Handle {
+    bundled(svg!(r#"<path d="M8 1.8v7.4M4.8 6.4 8 9.6l3.2-3.2"/><circle cx="8" cy="13" r="1.3"/>"#))
+}
+
+pub fn step_out() -> icon::Handle {
+    bundled(svg!(r#"<path d="M8 9.6V2.2M4.8 5 8 1.8 11.2 5"/><circle cx="8" cy="13" r="1.3"/>"#))
+}

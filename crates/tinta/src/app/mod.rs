@@ -1,6 +1,8 @@
 //! The application: all state lives here, every change goes through `update`.
 
 mod commands;
+mod debug;
+mod diff;
 mod docs;
 mod editing;
 mod explorer;
@@ -10,14 +12,19 @@ mod lsp;
 mod palette;
 mod script;
 mod search;
+mod tasks;
+mod vim;
 
 pub use explorer::{Explorer, RowAction};
 pub use git::{GitMsg, GitPanel};
 pub use keys::KeyEv;
 pub use lsp::{Completion, HoverPopup, SignaturePopup};
-pub use editing::{FIND_INPUT, REPLACE_INPUT};
+pub use editing::{FIND_INPUT, MAX_SHOWN_MATCHES, REPLACE_INPUT};
 pub use explorer::ExplorerMsg;
 pub use palette::{PAction, PItem, PaletteMode, PaletteMsg, PaletteState, PALETTE_INPUT};
+pub use debug::{DEBUG_INPUT, DebugMsg, DebugPanel, WATCH_INPUT};
+pub use tasks::{TaskMsg, TaskPanel};
+pub use vim::{VIM_LINE, VimMsg};
 pub use search::{SearchMsg, SearchPanel, SearchRow, SEARCH_INPUT};
 
 use crate::bus;
@@ -58,13 +65,16 @@ pub enum SidebarView {
     Search,
     Git,
     Outline,
+    Debug,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelView {
     Terminal,
+    Tasks,
     Problems,
     Output,
+    Debug,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -89,6 +99,7 @@ pub enum DialogState {
     RenamePath(PathBuf),
     TrashPath(PathBuf),
     RenameSymbol,
+    BreakpointCondition(PathBuf, usize),
     ConfirmDiscard(tinta_core::git::StatusEntry),
     About,
     Shortcuts,
@@ -161,16 +172,19 @@ pub enum BoolSetting {
     HotExit,
     ShowHidden,
     Lsp,
+    Vim,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Noop,
+    Surface(cosmic::surface::Action),
     Key(KeyEv),
     Modifiers(keyboard::Modifiers),
     InputFocus(bool),
     Cmd(Command),
     Editor(TabId, EditorEvent),
+    Diff(TabId, ui::diff_view::DiffEvent),
     TabActivate(usize, segmented_button::Entity),
     TabClose(usize, segmented_button::Entity),
     SidebarShow(SidebarView),
@@ -192,6 +206,10 @@ pub enum Message {
     Explorer(explorer::ExplorerMsg),
     Search(search::SearchMsg),
     Git(git::GitMsg),
+    Task(TaskMsg),
+    Vim(VimMsg),
+    Debug(DebugMsg),
+    TermLink(String, usize),
     OutlineJump(usize),
     CompletionPick(usize),
     Lsp(core_lsp::Event),
@@ -211,6 +229,7 @@ pub enum Message {
     CloseRequested,
     WindowFocused(bool),
     Dropped(Vec<PathBuf>),
+    RemoteOpen(Vec<crate::instance::Target>),
     Script(script::Step),
     ThemeChanged,
 }
@@ -231,6 +250,11 @@ pub struct App {
     pub explorer: Explorer,
     pub search: SearchPanel,
     pub git: GitPanel,
+    pub tasks: TaskPanel,
+    pub debug: DebugPanel,
+    pub vim: tinta_core::vim::Vim,
+    pub vim_line: Option<(char, String)>,
+    pub vim_highlight: Option<String>,
     pub sidebar: Option<SidebarView>,
     pub last_sidebar: SidebarView,
     pub sidebar_w: f32,
@@ -326,6 +350,11 @@ impl Application for App {
             explorer: Explorer::default(),
             search: SearchPanel::default(),
             git: GitPanel::default(),
+            tasks: TaskPanel::default(),
+            debug: DebugPanel::default(),
+            vim: tinta_core::vim::Vim::new(),
+            vim_line: None,
+            vim_highlight: None,
             sidebar: None,
             last_sidebar: SidebarView::Explorer,
             sidebar_w: 280.0,
@@ -423,8 +452,9 @@ impl Application for App {
         ui::popups::dialog(self)
     }
 
-    fn on_close_requested(&self, _id: window::Id) -> Option<Message> {
-        Some(Message::CloseRequested)
+    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        // Menus are popup surfaces, and this is called when they close too.
+        (self.core.main_window_id() == Some(id)).then_some(Message::CloseRequested)
     }
 
     fn on_context_drawer(&mut self) -> Task<Message> {
@@ -533,6 +563,13 @@ impl App {
 
     pub fn needs_frame_tick(&self) -> bool {
         for g in &self.groups {
+            if let Some(d) = g.active_tab().and_then(|t| self.tabs.get(&t)).and_then(|t| t.diff.as_ref()) {
+                for side in [&d.left, &d.right] {
+                    if side.highlighter.as_ref().is_some_and(|h| !h.is_done(side.len_lines())) {
+                        return true;
+                    }
+                }
+            }
             if let Some(t) = g.active_tab().and_then(|t| self.tabs.get(&t))
                 && let Some(e) = self.docs.get(&t.doc)
                 && let Some(h) = &e.doc.highlighter
@@ -553,6 +590,7 @@ impl App {
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Noop => Task::none(),
+            Message::Surface(a) => cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(a))),
             Message::Key(ev) => self.on_key(ev),
             Message::Modifiers(m) => {
                 self.modifiers = m;
@@ -568,6 +606,7 @@ impl App {
             }
             Message::Cmd(c) => self.run(c),
             Message::Editor(tab, ev) => self.on_editor_event(tab, ev),
+            Message::Diff(tab, ev) => self.on_diff_event(tab, ev),
             Message::TabActivate(g, e) => {
                 self.active_group = g.min(self.groups.len() - 1);
                 self.groups[self.active_group].model.activate(e);
@@ -640,6 +679,10 @@ impl App {
             Message::Explorer(m) => self.on_explorer(m),
             Message::Search(m) => self.on_search_msg(m),
             Message::Git(m) => self.on_git(m),
+            Message::Task(m) => self.on_task(m),
+            Message::Vim(m) => self.on_vim(m),
+            Message::Debug(m) => self.on_debug(m),
+            Message::TermLink(text, col) => self.on_term_link(text, col),
             Message::OutlineJump(line) => {
                 self.push_nav();
                 self.jump_to(line, 0);
@@ -741,6 +784,23 @@ impl App {
                 }
                 Task::batch(tasks)
             }
+            Message::RemoteOpen(targets) => {
+                let mut tasks = Vec::new();
+                for (path, at) in targets {
+                    if path.is_dir() {
+                        tasks.push(self.open_folder(path));
+                    } else {
+                        tasks.push(self.open_path(&path));
+                        if let Some((l, c)) = at {
+                            self.jump_to(l, c);
+                        }
+                    }
+                }
+                if let Some(id) = self.core.main_window_id() {
+                    tasks.push(window::gain_focus(id));
+                }
+                Task::batch(tasks)
+            }
             Message::Script(s) => self.on_script(s),
             Message::ThemeChanged => {
                 self.refresh_syntax_theme();
@@ -779,7 +839,12 @@ impl App {
         self.dark = dark;
         self.syntax_theme = tinta_core::syntax::theme_by_name(&name, dark);
         for e in self.docs.values_mut() {
-            docs::attach_highlighter(&mut e.doc, self.syntax_theme.clone());
+            docs::attach_language(&mut e.doc, self.syntax_theme.clone());
+        }
+        for d in self.tabs.values_mut().filter_map(|t| t.diff.as_deref_mut()) {
+            for side in [&mut d.left, &mut d.right] {
+                side.highlighter = tinta_core::syntax::Highlighter::new(&side.language.name, self.syntax_theme.clone());
+            }
         }
     }
 

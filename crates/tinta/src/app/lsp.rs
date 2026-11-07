@@ -110,13 +110,16 @@ impl App {
         let root = core_lsp::find_root(&path, self.folder.as_deref());
         let key = format!("{cmd}@{}", root.display());
         if let Some(entry) = self.lsp.get_mut(&key) {
-            if entry.ready {
-                entry.client.did_open(&path, lang, &self.docs[&doc].doc);
-            } else {
-                entry.waiting_docs.push(doc);
-            }
             if let Some(e) = self.docs.get_mut(&doc) {
-                e.lsp_key = Some(key);
+                e.lsp_key = Some(key.clone());
+                e.doc.track_lsp = true;
+                if entry.ready {
+                    // The server gets the whole text now, so no earlier change matters.
+                    let _ = e.doc.take_lsp_changes();
+                    entry.client.did_open(&path, lang, &e.doc);
+                } else {
+                    entry.waiting_docs.push(doc);
+                }
             }
             return Task::none();
         }
@@ -125,6 +128,7 @@ impl App {
                 self.lsp.insert(key.clone(), LspEntry { client, ready: false, waiting_docs: vec![doc], lang_id: lang.to_string() });
                 if let Some(e) = self.docs.get_mut(&doc) {
                     e.lsp_key = Some(key);
+                    e.doc.track_lsp = true;
                 }
                 Task::none()
             }
@@ -155,15 +159,15 @@ impl App {
 
     /// Sends pending text to the server. Called before any request, and on a timer.
     pub fn lsp_flush(&mut self, doc: DocId) {
-        let Some(e) = self.docs.get(&doc) else { return };
+        let Some(e) = self.docs.get_mut(&doc) else { return };
         if !e.lsp_dirty {
             return;
         }
+        e.lsp_dirty = false;
+        let changes = e.doc.take_lsp_changes();
+        let Some(e) = self.docs.get(&doc) else { return };
         if let (Some(p), Some(s)) = (&e.doc.path, self.server_for(doc)) {
-            s.client.did_change(p, &e.doc);
-        }
-        if let Some(e) = self.docs.get_mut(&doc) {
-            e.lsp_dirty = false;
+            s.client.did_change(p, &e.doc, changes);
         }
     }
 
@@ -242,6 +246,13 @@ impl App {
         }
         if !on_text {
             return Task::none();
+        }
+        // While the program is paused, what matters about a name is its value.
+        if diag_text.is_empty() {
+            let (col, text) = (self.docs[&doc].doc.line_col(pos).1, self.docs[&doc].doc.line_slice(line).to_string());
+            if self.debug_hover(&text, col, pos) {
+                return Task::none();
+            }
         }
         let (Some(key), Some(path)) = (key, path) else { return Task::none() };
         self.lsp_flush(doc);
@@ -719,8 +730,10 @@ impl App {
                     opened = std::mem::take(&mut entry.waiting_docs);
                 }
                 for d in opened {
-                    let Some(e) = self.docs.get(&d) else { continue };
+                    let Some(e) = self.docs.get_mut(&d) else { continue };
                     let Some(p) = e.doc.path.clone() else { continue };
+                    let _ = e.doc.take_lsp_changes();
+                    e.lsp_dirty = false;
                     if let Some(entry) = self.lsp.get(&server) {
                         let id = e.doc.language.lsp_id.unwrap_or(&entry.lang_id);
                         entry.client.did_open(&p, id, &e.doc);
@@ -735,6 +748,8 @@ impl App {
                     && let Some(e) = self.docs.get_mut(&id)
                 {
                     let rope = e.doc.rope.clone();
+                    // What the last build found stays until the next build.
+                    let from_build: Vec<Diag> = e.diags.iter().filter(|d| d.source.as_deref() == Some(super::tasks::TASK_SOURCE)).cloned().collect();
                     e.diags = items
                         .iter()
                         .map(|d| {
@@ -743,6 +758,7 @@ impl App {
                             Diag { start, end, severity: d.severity, message: d.message.clone(), source: d.source.clone(), raw: d.raw.clone() }
                         })
                         .collect();
+                    e.diags.extend(from_build);
                     e.diags.sort_by_key(|d| d.start);
                 }
                 if items.is_empty() {
@@ -949,6 +965,9 @@ impl App {
             for d in list {
                 out.push((path.clone(), d.range.start.line, d.range.start.character, d.severity, d.message.clone()));
             }
+        }
+        for (path, p) in &self.tasks.problems {
+            out.push((path.clone(), p.location.line, p.location.col, p.severity, p.message.clone()));
         }
         out.sort_by(|a, b| (a.3 as u8, &a.0, a.1).cmp(&(b.3 as u8, &b.0, b.1)));
         out

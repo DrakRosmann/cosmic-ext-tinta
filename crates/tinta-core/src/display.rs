@@ -122,6 +122,11 @@ impl Folds {
 
 /// Last line of the block a header at `line` opens, by indentation; `None` if not a header.
 pub fn fold_range(doc: &Document, line: usize, tab: usize) -> Option<usize> {
+    if let Some(st) = &doc.structure
+        && st.has_tree()
+    {
+        return st.fold_end(line).filter(|e| *e < doc.len_lines());
+    }
     if line + 1 >= doc.len_lines() || doc.line_is_blank(line) {
         return None;
     }
@@ -143,6 +148,11 @@ pub fn fold_range(doc: &Document, line: usize, tab: usize) -> Option<usize> {
 
 /// Cheap check for the gutter: does the next non-blank line step in?
 pub fn is_foldable(doc: &Document, line: usize, tab: usize) -> bool {
+    if let Some(st) = &doc.structure
+        && st.has_tree()
+    {
+        return st.fold_end(line).is_some();
+    }
     if doc.line_is_blank(line) {
         return false;
     }
@@ -173,6 +183,15 @@ pub fn line_indent_vcols(doc: &Document, line: usize, tab: usize) -> usize {
 
 /// Header lines enclosing `line`, outermost first, for sticky scroll.
 pub fn enclosing_headers(doc: &Document, line: usize, tab: usize, max: usize) -> Vec<usize> {
+    if let Some(st) = &doc.structure
+        && st.has_tree()
+    {
+        let mut out = st.enclosing(line);
+        if out.len() > max {
+            out.drain(..out.len() - max);
+        }
+        return out;
+    }
     let mut out = Vec::new();
     if line >= doc.len_lines() {
         return out;
@@ -436,13 +455,13 @@ mod tests {
         let mut f = Folds::default();
         f.add(10, 20);
         // Line added above: shifts down.
-        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 2, removed_lines: 0, inserted_lines: 1 });
+        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 2, removed_lines: 0, inserted_lines: 1, ..Default::default() });
         assert_eq!(f.ranges, vec![(11, 21)]);
         // Below: stays.
-        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 30, removed_lines: 0, inserted_lines: 1 });
+        f.on_change(&ChangeRec { at: 0, removed: 0, inserted: 1, start_line: 30, removed_lines: 0, inserted_lines: 1, ..Default::default() });
         assert_eq!(f.ranges, vec![(11, 21)]);
         // Deleting across it: opens.
-        f.on_change(&ChangeRec { at: 0, removed: 9, inserted: 0, start_line: 15, removed_lines: 9, inserted_lines: 0 });
+        f.on_change(&ChangeRec { at: 0, removed: 9, inserted: 0, start_line: 15, removed_lines: 9, inserted_lines: 0, ..Default::default() });
         assert!(f.ranges.is_empty());
     }
 

@@ -1,0 +1,11 @@
+[package]
+name = "tinta-xptr"
+description = "Real pointer input and real screenshots for a compositor nested in an X11 window, for end-to-end tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+x11rb = { version = "0.13", features = ["xtest"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

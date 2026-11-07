@@ -39,6 +39,10 @@ pub struct Session {
     pub recent_files: Vec<PathBuf>,
     pub recent_folders: Vec<PathBuf>,
     pub expanded: Vec<PathBuf>,
+    #[serde(default)]
+    pub breakpoints: crate::dap::Breakpoints,
+    #[serde(default)]
+    pub watches: Vec<String>,
 }
 
 fn session_path() -> PathBuf {

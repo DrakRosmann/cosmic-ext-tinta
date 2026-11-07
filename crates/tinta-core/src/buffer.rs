@@ -137,8 +137,16 @@ struct Transaction {
     prev_state: u64,
 }
 
+/// A change as LSP describes it: positions in the text just before it, in UTF-16 columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspChange {
+    pub start: crate::lsp::Pos,
+    pub end: crate::lsp::Pos,
+    pub text: String,
+}
+
 /// Something that changed in the text; other views and overlays translate themselves with it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChangeRec {
     pub at: usize,
     pub removed: usize,
@@ -146,6 +154,36 @@ pub struct ChangeRec {
     pub start_line: usize,
     pub removed_lines: usize,
     pub inserted_lines: usize,
+    /// The edit began at the start of its line.
+    pub starts_line: bool,
+    /// What it removed ended exactly at the start of a line.
+    pub ends_at_line_start: bool,
+    /// ...or at the end of one, so nothing of that line is left.
+    pub ends_at_line_end: bool,
+    pub inserted_ends_newline: bool,
+}
+
+impl ChangeRec {
+    /// Where the code on a line went, for marks that belong to that code. `None`: it's gone.
+    pub fn map_line(&self, line: usize) -> Option<usize> {
+        let (s, r, i) = (self.start_line, self.removed_lines, self.inserted_lines);
+        if line < s {
+            return Some(line);
+        }
+        if line > s + r {
+            return Some(line + i - r);
+        }
+        if r == 0 {
+            // Enter at the very start of the line pushes it down; anywhere else it stays.
+            return Some(if self.starts_line && self.removed == 0 && self.inserted_ends_newline { line + i } else { line });
+        }
+        if line == s + r {
+            // Backspace at the start of a line joins it to the one above, and it lives on there.
+            return if self.ends_at_line_start || !self.ends_at_line_end { Some(s + i) } else { None };
+        }
+        // The head of the first line survives, unless the edit started at its first char.
+        (line == s && !self.starts_line).then_some(s)
+    }
 }
 
 pub struct Document {
@@ -160,6 +198,11 @@ pub struct Document {
     pub disk_mtime: Option<SystemTime>,
     pub revision: u64,
     pub highlighter: Option<Highlighter>,
+    pub structure: Option<crate::structure::Structure>,
+    /// Keep a record of changes for a language server that takes them one at a time.
+    pub track_lsp: bool,
+    lsp_log: Vec<LspChange>,
+    lsp_overflow: bool,
     /// Display name for buffers with no file.
     pub scratch_name: String,
     undo: Vec<Transaction>,
@@ -170,6 +213,9 @@ pub struct Document {
     log: Vec<ChangeRec>,
     /// Stops coalescing after a cursor move, so undo does not swallow two separate edits.
     break_coalescing: bool,
+    /// Everything until `end_group` undoes as one step.
+    group_open: bool,
+    group_state: Option<u64>,
 }
 
 impl std::fmt::Debug for Document {
@@ -201,6 +247,10 @@ impl Document {
             disk_mtime: None,
             revision: 0,
             highlighter: None,
+            structure: None,
+            track_lsp: false,
+            lsp_log: Vec::new(),
+            lsp_overflow: false,
             scratch_name: String::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -209,6 +259,8 @@ impl Document {
             saved_state: Some(0),
             log: Vec::new(),
             break_coalescing: false,
+            group_open: false,
+            group_state: None,
         }
     }
 
@@ -406,9 +458,38 @@ impl Document {
         !self.redo.is_empty()
     }
 
+    /// Makes the edits until `end_group` one undo step, like everything typed in Vim's insert mode.
+    pub fn begin_group(&mut self) {
+        self.group_open = true;
+        self.group_state = None;
+        self.break_coalescing = true;
+    }
+
+    pub fn end_group(&mut self) {
+        self.group_open = false;
+        self.group_state = None;
+        self.break_coalescing = true;
+    }
+
     /// Next edit starts a new undo step.
     pub fn break_undo(&mut self) {
         self.break_coalescing = true;
+    }
+
+    /// The changes since the last call, in order. `None` when there were too many to be worth it,
+    /// and the whole text should be sent instead.
+    pub fn take_lsp_changes(&mut self) -> Option<Vec<LspChange>> {
+        let overflow = std::mem::take(&mut self.lsp_overflow);
+        let list = std::mem::take(&mut self.lsp_log);
+        (!overflow).then_some(list)
+    }
+
+    /// Brings the syntax tree up to date with the text.
+    pub fn sync_structure(&mut self) {
+        let rev = self.revision;
+        if let Some(st) = &mut self.structure {
+            st.update(&self.rope, rev);
+        }
     }
 
     /// Drains the record of what changed since the last call.
@@ -417,10 +498,29 @@ impl Document {
     }
 
     fn raw_change(&mut self, at: usize, remove: usize, insert: &str) -> String {
+        if self.track_lsp {
+            // Past this many, sending the whole text is cheaper.
+            if self.lsp_log.len() < 512 {
+                let change = LspChange {
+                    start: crate::lsp::to_lsp(&self.rope, at),
+                    end: crate::lsp::to_lsp(&self.rope, at + remove),
+                    text: insert.to_string(),
+                };
+                self.lsp_log.push(change);
+            } else {
+                self.lsp_overflow = true;
+            }
+        }
+        let tree_edit = self.structure.as_ref().map(|_| crate::structure::EditStart::new(&self.rope, at, remove));
         let start_line = self.rope.char_to_line(at);
         let removed: String = self.rope.slice(at..at + remove).to_string();
         let removed_lines = removed.bytes().filter(|b| *b == b'\n').count();
         let inserted_lines = insert.bytes().filter(|b| *b == b'\n').count();
+        let starts_line = self.rope.line_to_char(self.rope.char_to_line(at)) == at;
+        let end = at + remove;
+        let end_line = self.rope.char_to_line(end);
+        let ends_at_line_start = self.rope.line_to_char(end_line) == end;
+        let ends_at_line_end = end >= self.rope.len_chars() || self.rope.char(end) == '\n';
         if remove > 0 {
             self.rope.remove(at..at + remove);
         }
@@ -428,6 +528,10 @@ impl Document {
             self.rope.insert(at, insert);
         }
         self.log.push(ChangeRec {
+            starts_line,
+            ends_at_line_start,
+            ends_at_line_end,
+            inserted_ends_newline: insert.ends_with('\n'),
             at,
             removed: remove,
             inserted: insert.chars().count(),
@@ -437,6 +541,9 @@ impl Document {
         });
         if let Some(h) = &mut self.highlighter {
             h.on_change(start_line, removed_lines, inserted_lines);
+        }
+        if let (Some(st), Some(e)) = (&mut self.structure, tree_edit) {
+            st.edit(e.finish(&self.rope, insert.len()));
         }
         self.revision += 1;
         removed
@@ -489,7 +596,8 @@ impl Document {
                     && t.after == before
             });
         self.break_coalescing = false;
-        if coalesce {
+        let grouped = self.group_open && self.group_state == Some(self.state) && !self.undo.is_empty();
+        if coalesce || grouped {
             let t = self.undo.last_mut().unwrap();
             t.changes.extend(changes);
             t.after = cursors.clone();
@@ -507,12 +615,17 @@ impl Document {
                 state: self.state,
                 prev_state,
             });
+            if self.group_open {
+                self.group_state = Some(self.state);
+            }
         }
         map
     }
 
     pub fn undo(&mut self, cursors: &mut Cursors) -> bool {
         let Some(t) = self.undo.pop() else { return false };
+        self.group_open = false;
+        self.group_state = None;
         for c in t.changes.iter().rev() {
             self.raw_change(c.at, c.inserted.chars().count(), &c.removed);
         }
@@ -713,6 +826,54 @@ mod tests {
         doc.save_to(&p).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"\xFF\xFEo\0i\0\n\0");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The record of changes, applied to a copy the way a language server would, has to give the
+    /// same text: through multi-cursor edits, undo, non-ASCII and characters over one UTF-16 unit.
+    #[test]
+    fn lsp_changes_replay_to_the_same_text() {
+        fn apply(shadow: &mut String, c: &LspChange) {
+            let rope = Rope::from_str(shadow);
+            let a = rope.char_to_byte(crate::lsp::from_lsp(&rope, c.start));
+            let b = rope.char_to_byte(crate::lsp::from_lsp(&rope, c.end));
+            shadow.replace_range(a..b, &c.text);
+        }
+        let start = "ação 😀 linha\n\tsegunda 日本\nfim\n";
+        let mut doc = Document::new(start);
+        doc.track_lsp = true;
+        let mut shadow = start.to_string();
+        let mut cur = Cursors::default();
+        let check = |doc: &mut Document, shadow: &mut String| {
+            for c in doc.take_lsp_changes().unwrap() {
+                apply(shadow, &c);
+            }
+            assert_eq!(*shadow, doc.rope.to_string());
+        };
+        doc.apply(vec![Edit::insert(7, "X😀"), Edit::new(0, 4, "é"), Edit::insert(14, "\nnova\n")], &mut cur, EditKind::Other, |_, _| {});
+        check(&mut doc, &mut shadow);
+        doc.apply(vec![Edit::delete(1, 6)], &mut cur, EditKind::Other, |_, _| {});
+        check(&mut doc, &mut shadow);
+        doc.undo(&mut cur);
+        doc.undo(&mut cur);
+        check(&mut doc, &mut shadow);
+        assert_eq!(shadow, start);
+        doc.redo(&mut cur);
+        check(&mut doc, &mut shadow);
+        doc.replace_all("outro texto\ncom 😀\n", &mut cur);
+        check(&mut doc, &mut shadow);
+    }
+
+    #[test]
+    fn too_many_lsp_changes_ask_for_the_whole_text() {
+        let mut doc = Document::new("");
+        doc.track_lsp = true;
+        let mut cur = Cursors::default();
+        for i in 0..600 {
+            doc.apply(vec![Edit::insert(i, "x")], &mut cur, EditKind::Other, |_, _| {});
+        }
+        assert!(doc.take_lsp_changes().is_none());
+        doc.apply(vec![Edit::insert(0, "y")], &mut cur, EditKind::Other, |_, _| {});
+        assert_eq!(doc.take_lsp_changes().unwrap().len(), 1);
     }
 
     #[test]

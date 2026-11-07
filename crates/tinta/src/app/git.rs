@@ -138,20 +138,6 @@ impl App {
         Task::none()
     }
 
-    pub fn show_file_diff(&mut self) -> Task<Message> {
-        let Some((_, e)) = self.active() else { return Task::none() };
-        let Some((root, rel)) = e.git_rel.clone() else { return self.toast(tr("Not a git repository")) };
-        self.open_git_diff(root, rel, false)
-    }
-
-    fn open_git_diff(&mut self, root: PathBuf, rel: String, staged: bool) -> Task<Message> {
-        match core_git::diff(&root, &rel, staged) {
-            Ok(text) if !text.is_empty() => self.open_generated(format!("{}: {rel}", tr("Changes in")), &text, "Diff"),
-            Ok(_) => self.open_path(&root.join(&rel)),
-            Err(e) => self.toast(e),
-        }
-    }
-
     pub fn git_discard(&mut self, entry: StatusEntry) -> Task<Message> {
         let Some(root) = self.git.root.clone() else { return Task::none() };
         if let Err(e) = core_git::discard(&root, &entry) {

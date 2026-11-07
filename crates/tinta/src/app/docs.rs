@@ -15,9 +15,16 @@ use tinta_core::settings::AutoSave;
 use tinta_core::syntax::Highlighter;
 use tinta_core::{Cursors, Document, Selection, commands, display, git as core_git};
 
-pub fn attach_highlighter(doc: &mut Document, theme: Arc<syntect::highlighting::Theme>) {
+/// Sets up what depends on the language: colours, and the syntax tree where there's a parser.
+pub fn attach_language(doc: &mut Document, theme: Arc<syntect::highlighting::Theme>) {
     doc.highlighter = Highlighter::new(&doc.language.name, theme);
+    let name = doc.language.name.clone();
+    doc.structure = (doc.len_chars() <= tinta_core::structure::MAX_CHARS).then(|| tinta_core::structure::Structure::new(&name)).flatten();
+    doc.sync_structure();
 }
+
+/// Up to this size the syntax tree follows every key. Past it, it waits for a pause.
+const SYNC_ON_EVERY_EDIT: usize = 200_000;
 
 fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
@@ -34,7 +41,7 @@ impl App {
     }
 
     fn make_entry(&mut self, mut doc: Document) -> DocId {
-        attach_highlighter(&mut doc, self.syntax_theme.clone());
+        attach_language(&mut doc, self.syntax_theme.clone());
         let id = self.new_id();
         let key = session::backup_key(doc.path.as_deref(), id);
         let entry = DocEntry::new(doc, key);
@@ -65,6 +72,9 @@ impl App {
         if t.kind == TabKind::Preview {
             s.push_str(&format!("{} · {}", tr("Rendered preview"), e.doc.file_name()));
             return s;
+        }
+        if t.kind == TabKind::Diff {
+            s.push_str("⇄ ");
         }
         if e.doc.is_dirty() && !e.is_read_only_view {
             s.push_str("● ");
@@ -163,6 +173,7 @@ impl App {
         self.focus = Focus::Editor;
         self.watch_parent(&path);
         self.refresh_git_for(id);
+        self.attach_task_problems_to(&path);
         let t = self.lsp_open_doc(id);
         Task::batch([t, self.on_active_changed()])
     }
@@ -279,7 +290,7 @@ impl App {
             e.doc.language = tinta_core::language::detect(&path, e.doc.rope.line(0).as_str().unwrap_or(""));
         }
         if let Some(e) = self.docs.get_mut(&doc_id) {
-            attach_highlighter(&mut e.doc, self.syntax_theme.clone());
+            attach_language(&mut e.doc, self.syntax_theme.clone());
         }
         let t = self.finish_save(id, path.clone());
         let t2 = self.lsp_open_doc(doc_id);
@@ -432,7 +443,8 @@ impl App {
 
     pub fn request_quit(&mut self) -> Task<Message> {
         let dirty = self.docs.values().any(|e| e.doc.is_dirty() && !e.is_read_only_view);
-        if dirty && !self.settings.hot_exit {
+        // A separate instance keeps no backups, so its unsaved work has to be asked about.
+        if dirty && (!self.settings.hot_exit || self.new_session) {
             self.dialog = Some(DialogState::QuitUnsaved);
             return Task::none();
         }
@@ -440,9 +452,17 @@ impl App {
     }
 
     pub fn quit_now(&mut self) -> Task<Message> {
-        self.write_backups(true);
-        super::save_session(self);
+        self.persist_on_quit();
         cosmic::iced::exit()
+    }
+
+    /// Only the main instance owns the session and the backups.
+    pub fn persist_on_quit(&mut self) {
+        self.debug_shutdown();
+        if !self.new_session {
+            self.write_backups(true);
+            super::save_session(self);
+        }
     }
 
     // Session ------------------------------------------------------------------------------
@@ -481,13 +501,14 @@ impl App {
             recent_files: self.recent_files.clone(),
             recent_folders: self.recent_folders.clone(),
             expanded: self.explorer.expanded.iter().cloned().collect(),
+            breakpoints: self.debug.breakpoints.clone(),
+            watches: self.debug.watches.clone(),
         }
     }
 
     pub fn restore(&mut self, targets: Vec<(PathBuf, Option<(usize, usize)>)>) -> Task<Message> {
         let mut tasks = Vec::new();
         let saved = (!self.new_session && self.settings.restore_session).then(Session::load).flatten();
-        let has_targets = !targets.is_empty();
         if let Some(s) = &saved {
             self.recent_files = s.recent_files.clone();
             self.recent_folders = s.recent_folders.clone();
@@ -498,7 +519,11 @@ impl App {
                 self.panel_h = s.panel_height;
             }
         }
-        if let Some(s) = saved.filter(|_| !has_targets) {
+        // Files on the command line open on top: skipping the session would lose its unsaved work.
+        if let Some(s) = saved {
+            self.debug.breakpoints = s.breakpoints.clone();
+            self.debug.breakpoints.retain(|p, _| p.is_file());
+            self.debug.watches = s.watches.clone();
             if let Some(f) = s.folder.clone().filter(|f| f.is_dir()) {
                 tasks.push(self.open_folder(f));
                 for p in &s.expanded {
@@ -761,6 +786,11 @@ impl App {
             }
             any_change = true;
             self.apply_change_log(id, &log);
+            if let Some(e) = self.docs.get_mut(&id)
+                && e.doc.len_chars() <= SYNC_ON_EVERY_EDIT
+            {
+                e.doc.sync_structure();
+            }
         }
         let (visible, wrap_changed) = self.sync_visible_tabs();
         let _ = wrap_changed;
@@ -820,23 +850,16 @@ impl App {
             d.end = map_pos(d.end, log);
         }
         for c in log {
-            let delta = c.inserted_lines as isize - c.removed_lines as isize;
-            if delta != 0 {
-                e.bookmarks = e
-                    .bookmarks
-                    .iter()
-                    .filter_map(|l| {
-                        if *l <= c.start_line {
-                            Some(*l)
-                        } else if *l <= c.start_line + c.removed_lines {
-                            None
-                        } else {
-                            Some((*l as isize + delta) as usize)
-                        }
-                    })
-                    .collect();
+            if c.inserted_lines != c.removed_lines {
+                e.bookmarks = e.bookmarks.iter().filter_map(|l| c.map_line(*l)).collect();
             }
         }
+        if let Some(path) = e.doc.path.clone() {
+            for c in log.iter().filter(|c| c.inserted_lines != c.removed_lines) {
+                self.debug_follow_edit(&path, c);
+            }
+        }
+        let Some(e) = self.docs.get_mut(&id) else { return };
         e.git_stale = true;
         e.lsp_dirty = true;
         e.last_edit = Some(now);
@@ -890,6 +913,16 @@ impl App {
     }
 
     pub fn advance_highlighting(&mut self, budget: Duration) {
+        let shown_diffs: Vec<TabId> = self.groups.iter().filter_map(Group::active_tab).collect();
+        for id in shown_diffs {
+            if let Some(d) = self.tabs.get_mut(&id).and_then(|t| t.diff.as_deref_mut()) {
+                for side in [&mut d.left, &mut d.right] {
+                    if let Some(h) = &mut side.highlighter {
+                        h.advance(&side.rope, budget);
+                    }
+                }
+            }
+        }
         let visible: Vec<DocId> = self.groups.iter().filter_map(|g| g.active_tab().and_then(|t| self.tabs.get(&t)).map(|t| t.doc)).collect();
         for id in visible {
             if let Some(e) = self.docs.get_mut(&id)
@@ -909,6 +942,7 @@ impl App {
                 && e.symbols_rev != Some(e.doc.revision)
                 && e.last_edit.is_none_or(|t| t.elapsed() > Duration::from_millis(400))
             {
+                e.doc.sync_structure();
                 e.symbols = if e.doc.len_lines() < 100_000 { tinta_core::outline::symbols(&e.doc) } else { Vec::new() };
                 e.symbols_rev = Some(e.doc.revision);
             }
@@ -917,7 +951,7 @@ impl App {
 
     /// Runs once a second.
     pub fn tick_slow(&mut self) -> Task<Message> {
-        let mut tasks = Vec::new();
+        let mut tasks = vec![self.debug_tick()];
         self.refresh_symbols();
         // Debounced git diff of the buffer against HEAD.
         for e in self.docs.values_mut() {
@@ -940,8 +974,10 @@ impl App {
         // Hot exit copies and the session file.
         if self.session_dirty.is_some_and(|t| t.elapsed() > Duration::from_secs(3)) {
             self.session_dirty = None;
-            self.write_backups(false);
-            super::save_session(self);
+            if !self.new_session {
+                self.write_backups(false);
+                super::save_session(self);
+            }
         }
         // Hand-edited settings, picked up without a restart.
         let m = super::file_mtime(&tinta_core::settings::settings_path());
@@ -959,6 +995,7 @@ impl App {
 
     pub fn on_active_changed(&mut self) -> Task<Message> {
         self.close_popups();
+        self.vim_reset();
         self.refresh_symbols();
         self.after_caret_move();
         self.mark_session_dirty();
@@ -1011,6 +1048,13 @@ impl App {
         e.doc.break_undo();
         self.center_active();
         self.after_caret_move();
+    }
+
+    /// Before anything that acts on folds: on big files the tree may be waiting for a pause.
+    pub fn sync_active_structure(&mut self) {
+        if let Some((_, e)) = self.active_mut() {
+            e.doc.sync_structure();
+        }
     }
 
     pub fn fold_line_range(doc: &Document, line: usize) -> Option<usize> {

@@ -28,6 +28,9 @@ fn icon_item<'a>(h: icon::Handle, label: String, msg: Message) -> Element<'a, Me
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let mut r = row::with_capacity(14).align_y(Alignment::Center).width(Length::Fill).spacing(1);
+    if app.settings.vim_mode {
+        r = r.push(container(text(app.vim.status()).size(12).font(cosmic::font::semibold())).padding([0, 8]));
+    }
     if let Some(b) = &app.git.branch {
         let mut label = b.clone();
         if let Some((ahead, behind)) = app.git.ahead_behind
@@ -52,13 +55,25 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(p) = &app.lsp_progress {
         r = r.push(container(text(p.clone()).size(12).class(theme::Text::Color(dim_text())).wrapping(cosmic::iced::widget::text::Wrapping::None)).clip(true).padding([0, 8]).max_width(420.0));
     }
+    if let Some(s) = app.debug.session.as_ref().filter(|s| s.is_live()) {
+        let state = if s.is_stopped() { tr("Paused") } else { tr("Running") };
+        r = r.push(icon_item(icons::debug(), format!("{} · {state}", s.name), Message::SidebarShow(crate::app::SidebarView::Debug)));
+    }
     if let Some(k) = app.keymap.pending_label() {
         r = r.push(text(format!("{k} …")).size(12));
     }
     r = r.push(widget::Space::new().width(Length::Fill));
 
     let focus_terminal = app.focus == Focus::Terminal && app.panel == Some(PanelView::Terminal);
-    if let Some((t, e)) = app.active()
+    if let Some(d) = app.active().and_then(|(t, _)| t.diff.as_ref()) {
+        r = r.push(container(text(format!("+{} −{}", d.added, d.removed)).size(12)).padding([0, 7]));
+        let pos = match d.current {
+            Some(c) => format!("{} {} {}", c + 1, tr("of"), d.hunks.len()),
+            None => format!("{}", d.hunks.len()),
+        };
+        r = r.push(item(pos, Message::Cmd(Command::NextChange)));
+        r = r.push(item(d.right.language.name.clone(), Message::Noop));
+    } else if let Some((t, e)) = app.active()
         && !focus_terminal
     {
         let d = &e.doc;

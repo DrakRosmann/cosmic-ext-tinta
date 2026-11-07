@@ -17,6 +17,36 @@ pub fn is_portuguese() -> bool {
     })
 }
 
+/// Messages built elsewhere, like the debugger's explanations of what's missing.
+pub fn tr_message(en: &str) -> String {
+    if !is_portuguese() {
+        return en.to_string();
+    }
+    const TABLE: &[(&str, &str)] = &[
+        ("gdb 14 or newer, built with Python, was not found", "gdb 14 ou mais novo, com Python, não foi encontrado"),
+        ("program not found", "programa não encontrado"),
+        ("not an executable program", "não é um programa executável"),
+        ("the debugger did not start the program", "o depurador não iniciou o programa"),
+        ("lldb-dap was not found", "lldb-dap não foi encontrado"),
+        ("debugpy was not found", "debugpy não foi encontrado"),
+        ("dlv was not found", "dlv não foi encontrado"),
+        ("no debugger found: install gdb 14 or newer, or lldb-dap", "nenhum depurador encontrado: instale o gdb 14 ou mais novo, ou o lldb-dap"),
+        ("this file isn't in a Cargo project: add .tinta/launch.json", "este arquivo não está em um projeto Cargo: crie o .tinta/launch.json"),
+        ("this Cargo project has no binary: add .tinta/launch.json", "este projeto Cargo não tem binário: crie o .tinta/launch.json"),
+        ("no program was found after the build: add .tinta/launch.json", "nenhum programa encontrado depois da compilação: crie o .tinta/launch.json"),
+        ("save the file first", "salve o arquivo primeiro"),
+        ("no debugger is known for", "nenhum depurador conhecido para"),
+        (": add .tinta/launch.json", ": crie o .tinta/launch.json"),
+        ("unknown debugger type", "tipo de depurador desconhecido"),
+        ("is missing", "está faltando"),
+    ];
+    let mut out = en.to_string();
+    for (a, b) in TABLE {
+        out = out.replace(a, b);
+    }
+    out
+}
+
 pub fn tr(en: &'static str) -> &'static str {
     if !is_portuguese() {
         return en;
@@ -77,6 +107,53 @@ pub fn tr(en: &'static str) -> &'static str {
         "Refresh status" => "Atualizar estado",
         "No symbols" => "Nenhum símbolo",
         "Problems" => "Problemas",
+        "Debug" => "Depurar",
+        "Run and Debug" => "Execução e depuração",
+        "Debug Console" => "Console de depuração",
+        "Start Debugging" => "Iniciar depuração",
+        "Choose configuration" => "Escolher configuração",
+        "Edit launch.json" => "Editar launch.json",
+        "Building…" => "Compilando…",
+        "Build for debugging" => "Compilar para depurar",
+        "Variables" => "Variáveis",
+        "Watch" => "Observar",
+        "Add an expression" => "Adicionar expressão",
+        "Call Stack" => "Pilha de chamadas",
+        "Breakpoints" => "Breakpoints",
+        "Shown when the program pauses" => "Aparece quando o programa pausa",
+        "F9 or a click left of the line numbers" => "F9 ou um clique à esquerda dos números de linha",
+        "Pause" => "Pausar",
+        "Paused" => "Pausado",
+        "Starting" => "Iniciando",
+        "Continue (F5)" => "Continuar (F5)",
+        "Step Over (F10)" => "Próxima linha (F10)",
+        "Step Into (F11)" => "Entrar na função (F11)",
+        "Step Out (Shift+F11)" => "Sair da função (Shift+F11)",
+        "Restart" => "Reiniciar",
+        "Stop (Shift+F5)" => "Parar (Shift+F5)",
+        "no source" => "sem código-fonte",
+        "Program exited with code" => "O programa terminou com o código",
+        "Debug session ended" => "Sessão de depuração encerrada",
+        "No debug session" => "Nenhuma sessão de depuração",
+        "Save the file first" => "Salve o arquivo primeiro",
+        "Breakpoint condition" => "Condição do breakpoint",
+        "Stops only when this is true. Empty: always." => "Só para quando isto for verdadeiro. Vazio: sempre.",
+        "Expression to evaluate; -exec for a debugger command" => "Expressão para avaliar; -exec para um comando do depurador",
+        "Staged" => "Preparado",
+        "Working tree" => "Área de trabalho",
+        "Unsaved changes" => "Alterações não salvas",
+        "Vim mode" => "Modo Vim",
+        "No write since last change (add ! to override)" => "Alterações não salvas (use ! para descartar)",
+        "Tasks" => "Tarefas",
+        "No tasks found in this folder" => "Nenhuma tarefa encontrada nesta pasta",
+        "No task has run yet" => "Nenhuma tarefa executada ainda",
+        "finished" => "concluído",
+        "errors" => "erros",
+        "warnings" => "avisos",
+        "Running" => "Executando",
+        "Exit code" => "Código de saída",
+        "Stop" => "Parar",
+        "Run again" => "Executar de novo",
         "Output" => "Saída",
         "No problems" => "Nenhum problema",
         "New Terminal" => "Novo terminal",
@@ -96,7 +173,6 @@ pub fn tr(en: &'static str) -> &'static str {
         "OK" => "OK",
         "Create" => "Criar",
         "Quit" => "Sair",
-        "Unsaved changes" => "Alterações não salvas",
         "Save changes before closing?" => "Salvar as alterações antes de fechar?",
         "You have unsaved files. Save them before quitting?" => "Há arquivos não salvos. Salvar antes de sair?",
         "Save All" => "Salvar tudo",
@@ -186,6 +262,7 @@ pub fn tr(en: &'static str) -> &'static str {
         "Nothing to rename here" => "Nada para renomear aqui",
         "Waiting for the next key…" => "Aguardando a próxima tecla…",
         "replacements" => "substituições",
+        "files failed, see Output" => "arquivos falharam, veja a Saída",
         "Keyboard Shortcuts" => "Atalhos de teclado",
         "matches in" => "resultados em",
         "files" => "arquivos",
@@ -196,7 +273,7 @@ pub fn tr(en: &'static str) -> &'static str {
         "Pushed" => "Enviado",
         "Pulled" => "Recebido",
         "A code editor for the COSMIC desktop, written in Rust." => "Um editor de código para o desktop COSMIC, escrito em Rust.",
-        "Reference" => "Referência",
+        "Configuration Files" => "Arquivos de configuração",
         "Terminal exited" => "Terminal encerrado",
         "Undo" => "Desfazer",
         "Redo" => "Refazer",
