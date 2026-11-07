@@ -73,8 +73,9 @@ linguagens.
 **Depurador (DAP)**
 
 `F5` compila e roda, e pronto. Usa o `gdb` 14 ou mais novo, o `lldb-dap`, o `debugpy` ou o `dlv`,
-os que estiverem instalados. O gdb e o debugpy têm testes contra programas de verdade; o lldb-dap e
-o dlv usam o mesmo código, mas ainda não foram experimentados.
+os que estiverem instalados. Os testes rodam contra programas de verdade no gdb 15, 16, 17 e 18 e no
+debugpy. O gdb 14 é aceito, mas não foi testado, e o lldb-dap e o dlv usam o mesmo código, mas ainda
+não foram experimentados.
 
 - Breakpoints com um clique à esquerda dos números de linha ou `F9`, condicionais com `Shift+F9`.
   Acompanham o código quando o arquivo muda e continuam lá da próxima vez

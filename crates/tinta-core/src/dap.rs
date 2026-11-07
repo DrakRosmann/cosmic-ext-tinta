@@ -157,16 +157,38 @@ pub struct Adapter {
     pub args: Vec<String>,
 }
 
-fn gdb_with_dap() -> bool {
-    // GDB speaks DAP from version 14 on, and only when built with Python.
-    static CACHE: OnceLock<bool> = OnceLock::new();
+/// The major version of a gdb built with Python.
+fn gdb_major() -> Option<u32> {
+    static CACHE: OnceLock<Option<u32>> = OnceLock::new();
     *CACHE.get_or_init(|| {
-        let Ok(out) = Command::new("gdb").args(["--batch", "-ex", "python import gdb; print(gdb.VERSION)"]).stderr(Stdio::null()).output() else {
-            return false;
-        };
+        let out = Command::new("gdb").args(["--batch", "-ex", "python import gdb; print(gdb.VERSION)"]).stderr(Stdio::null()).output().ok()?;
         let text = String::from_utf8_lossy(&out.stdout);
-        text.trim().split('.').next().and_then(|m| m.parse::<u32>().ok()).is_some_and(|major| major >= 14)
+        text.trim().split('.').next()?.parse().ok()
     })
+}
+
+/// GDB speaks DAP from version 14 on, and only when built with Python.
+fn gdb_with_dap() -> bool {
+    gdb_major().is_some_and(|major| major >= 14)
+}
+
+/// Up to 15, gdb runs the program the moment `launch` arrives and ignores `configurationDone`, so
+/// a `launch` sent early races the breakpoints, and sometimes wins. From 16 on it waits, and it
+/// refuses a `configurationDone` with no `launch` before it, so there's no one order for both.
+fn gdb_runs_on_launch() -> bool {
+    gdb_major().is_some_and(|major| major <= 15)
+}
+
+/// Those same versions hand the path to gdb's `file` command as it is.
+fn escape_for_file_command(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if c.is_whitespace() || matches!(c, '\\' | '\'' | '"') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn python_has_debugpy(python: &str) -> bool {
@@ -668,6 +690,8 @@ pub struct Debugger {
     configured: bool,
     /// When the adapter said the launch went fine, for the ones that say so regardless.
     launched_at: Option<Instant>,
+    /// `launch` goes after `configurationDone` instead of before it.
+    launch_last: bool,
     /// Anything that shows the program really is starting.
     program_seen: bool,
     pub start_limit: Duration,
@@ -676,6 +700,8 @@ pub struct Debugger {
 const MAX_ROWS: usize = 2000;
 /// Generous: the program's symbols are already loaded when this starts counting.
 const START_LIMIT: Duration = Duration::from_secs(15);
+/// When the adapter loads symbols and runs the program all in the one request we're timing.
+const START_LIMIT_LAUNCH_LAST: Duration = Duration::from_secs(60);
 
 /// Catches what would otherwise look like a session that never does anything.
 fn check_program(c: &LaunchConfig) -> Result<(), String> {
@@ -695,11 +721,16 @@ impl Debugger {
         check_program(&plan.config)?;
         let cwd = Path::new(&plan.config.cwd);
         let client = Client::start(&adapter, if cwd.is_dir() { cwd } else { &plan.root }, sink).map_err(|e| format!("{}: {e}", adapter.command))?;
+        let launch_last = adapter.kind == "gdb" && gdb_runs_on_launch();
+        let mut launch = launch_arguments(&plan.config);
+        if launch_last {
+            launch["program"] = json!(escape_for_file_command(&plan.config.program));
+        }
         let mut d = Self {
             client,
             kind: adapter.kind.clone(),
             name: plan.config.name.clone(),
-            launch: launch_arguments(&plan.config),
+            launch,
             state: RunState::Starting,
             capabilities: Value::Null,
             pending: HashMap::new(),
@@ -717,8 +748,9 @@ impl Debugger {
             exit_code: None,
             configured: false,
             launched_at: None,
+            launch_last,
             program_seen: false,
-            start_limit: START_LIMIT,
+            start_limit: if launch_last { START_LIMIT_LAUNCH_LAST } else { START_LIMIT },
         };
         let args = json!({
             "clientID": "tinta",
@@ -1033,6 +1065,12 @@ impl Debugger {
                 if self.state == RunState::Starting {
                     self.state = RunState::Running;
                 }
+                if self.launch_last {
+                    // It may not answer until the program first stops, so the clock starts here.
+                    let args = self.launch.clone();
+                    self.send(Pending::Launch, "launch", args);
+                    self.launched_at = Some(Instant::now());
+                }
                 Vec::new()
             }
             "stopped" => {
@@ -1123,9 +1161,11 @@ impl Debugger {
                     return vec![Notice::Failed(message)];
                 }
                 self.capabilities = body.clone();
-                let args = self.launch.clone();
-                // Some adapters answer this only after configurationDone, so nothing waits on it.
-                self.send(Pending::Launch, "launch", args);
+                if !self.launch_last {
+                    let args = self.launch.clone();
+                    // Some adapters answer this only after configurationDone, so nothing waits on it.
+                    self.send(Pending::Launch, "launch", args);
+                }
                 Vec::new()
             }
             Pending::Launch => {
@@ -1769,6 +1809,46 @@ int main(void) {
         let output: String = r.notices.iter().filter_map(|n| if let Notice::Output { text, .. } = n { Some(text.as_str()) } else { None }).collect();
         assert!(output.contains("total 42"), "{output}");
         assert!(r.notices.contains(&Notice::Ended { code: Some(3) }), "{:?}", r.notices);
+    }
+
+    #[test]
+    fn a_path_with_spaces_and_quotes_runs() {
+        if !gdb_with_dap() {
+            return;
+        }
+        let dir = tempfile().join("minha pasta");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("o'programa novo.c");
+        std::fs::write(&src, PROGRAM).unwrap();
+        let exe = dir.join("o'programa novo");
+        assert!(Command::new("cc").args(["-g", "-O0"]).arg(&src).arg("-o").arg(&exe).status().unwrap().success());
+        let mut bps = Breakpoints::new();
+        bps.insert(src, vec![Breakpoint::at(5)]);
+        let mut r = Rig::start(&plan_for(&exe, &dir), bps);
+        r.d.start_limit = Duration::from_secs(10);
+        r.until("stop", Rig::stopped_with_vars);
+        assert_eq!(r.line(), 5);
+        r.d.stop();
+    }
+
+    /// The race that older gdb loses now and then: a program too short to give it a second chance.
+    #[test]
+    fn breakpoints_are_in_place_before_the_program_runs() {
+        let Some((src, plan)) = c_program() else { return };
+        for _ in 0..12 {
+            let mut bps = Breakpoints::new();
+            bps.insert(src.clone(), vec![Breakpoint::at(5)]);
+            let mut r = Rig::start(&plan, bps);
+            r.until("stop", Rig::stopped_with_vars);
+            assert_eq!(r.line(), 5);
+            r.d.stop();
+        }
+    }
+
+    #[test]
+    fn escaping_for_the_file_command() {
+        assert_eq!(escape_for_file_command("/a/b"), "/a/b");
+        assert_eq!(escape_for_file_command("/a b/o'c"), r"/a\ b/o\'c");
     }
 
     #[test]
