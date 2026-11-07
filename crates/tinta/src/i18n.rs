@@ -24,6 +24,9 @@ pub fn tr_message(en: &str) -> String {
     }
     const TABLE: &[(&str, &str)] = &[
         ("gdb 14 or newer, built with Python, was not found", "gdb 14 ou mais novo, com Python, não foi encontrado"),
+        ("program not found", "programa não encontrado"),
+        ("not an executable program", "não é um programa executável"),
+        ("the debugger did not start the program", "o depurador não iniciou o programa"),
         ("lldb-dap was not found", "lldb-dap não foi encontrado"),
         ("debugpy was not found", "debugpy não foi encontrado"),
         ("dlv was not found", "dlv não foi encontrado"),

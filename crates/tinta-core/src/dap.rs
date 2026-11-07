@@ -10,6 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub enum Incoming {
@@ -665,13 +666,33 @@ pub struct Debugger {
     pub watches: Vec<Watch>,
     pub exit_code: Option<i64>,
     configured: bool,
+    /// When the adapter said the launch went fine, for the ones that say so regardless.
+    launched_at: Option<Instant>,
+    /// Anything that shows the program really is starting.
+    program_seen: bool,
+    pub start_limit: Duration,
 }
 
 const MAX_ROWS: usize = 2000;
+/// Generous: the program's symbols are already loaded when this starts counting.
+const START_LIMIT: Duration = Duration::from_secs(15);
+
+/// Catches what would otherwise look like a session that never does anything.
+fn check_program(c: &LaunchConfig) -> Result<(), String> {
+    let p = Path::new(&c.program);
+    if !p.exists() {
+        return Err(format!("program not found: {}", c.program));
+    }
+    if matches!(c.kind.as_str(), "gdb" | "lldb") && !is_elf_executable(p) {
+        return Err(format!("not an executable program: {}", c.program));
+    }
+    Ok(())
+}
 
 impl Debugger {
     pub fn start(plan: &Plan, watches: &[String], sink: Sink) -> Result<Self, String> {
         let adapter = resolve_adapter(&plan.config.kind)?;
+        check_program(&plan.config)?;
         let cwd = Path::new(&plan.config.cwd);
         let client = Client::start(&adapter, if cwd.is_dir() { cwd } else { &plan.root }, sink).map_err(|e| format!("{}: {e}", adapter.command))?;
         let mut d = Self {
@@ -695,6 +716,9 @@ impl Debugger {
             watches: watches.iter().map(|w| Watch { expression: w.clone(), result: Err(String::new()) }).collect(),
             exit_code: None,
             configured: false,
+            launched_at: None,
+            program_seen: false,
+            start_limit: START_LIMIT,
         };
         let args = json!({
             "clientID": "tinta",
@@ -713,6 +737,20 @@ impl Debugger {
         let seq = self.client.request(command, args);
         self.pending.insert(seq, p);
         seq
+    }
+
+    /// Gdb up to 17 reports a launch as fine even when it couldn't load the program, and then does
+    /// nothing. It's the only adapter this looks for: it always announces the program, while others
+    /// might not, and a limit on those could kill a program that's running normally.
+    pub fn check_started(&mut self) -> Option<Notice> {
+        if self.kind != "gdb" || self.program_seen || !self.is_live() {
+            return None;
+        }
+        if self.launched_at?.elapsed() < self.start_limit {
+            return None;
+        }
+        self.stop();
+        Some(Notice::Failed(format!("the debugger did not start the program: {}", self.name)))
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -977,7 +1015,11 @@ impl Debugger {
 
     fn on_event(&mut self, m: &Value, bps: &mut Breakpoints) -> Vec<Notice> {
         let body = &m["body"];
-        match m["event"].as_str().unwrap_or("") {
+        let event = m["event"].as_str().unwrap_or("");
+        if matches!(event, "process" | "thread" | "module" | "stopped" | "exited" | "terminated") {
+            self.program_seen = true;
+        }
+        match event {
             "initialized" => {
                 if self.configured {
                     return Vec::new();
@@ -1088,6 +1130,7 @@ impl Debugger {
             }
             Pending::Launch => {
                 if ok {
+                    self.launched_at = Some(Instant::now());
                     return Vec::new();
                 }
                 self.stop();
@@ -1299,7 +1342,6 @@ pub fn hover_expression(line: &str, col: usize) -> Option<String> {
 mod tests {
     use super::*;
     use std::sync::mpsc::{Receiver, RecvTimeoutError};
-    use std::time::{Duration, Instant};
 
     #[test]
     fn breakpoints_toggle_in_order_and_follow_their_lines() {
@@ -1521,7 +1563,12 @@ int main(void) {
                         self.notices.extend(n);
                     }
                     Err(RecvTimeoutError::Timeout) if cond(self) => return,
-                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Timeout) => {
+                        // What the application's slow tick does.
+                        if let Some(n) = self.d.check_started() {
+                            self.notices.push(n);
+                        }
+                    }
                     // The adapter has gone, and with it anything more to wait for.
                     Err(RecvTimeoutError::Disconnected) => {
                         assert!(cond(self), "{what}: the adapter left in state {:?}\n{:?}", self.d.state, self.notices);
@@ -1734,16 +1781,61 @@ int main(void) {
         r.d.stop();
     }
 
+    fn plan_for(program: &Path, dir: &Path) -> Plan {
+        let config = LaunchConfig { name: "x".into(), kind: "gdb".into(), program: program.to_string_lossy().into_owned(), cwd: dir.to_string_lossy().into_owned(), ..LaunchConfig::default() };
+        Plan { root: dir.to_path_buf(), config, program_from: ProgramFrom::Known }
+    }
+
     #[test]
-    fn a_program_that_is_not_there_fails_with_a_reason() {
+    fn a_program_that_cannot_run_is_refused_with_a_reason() {
+        use std::os::unix::fs::PermissionsExt;
         if !gdb_with_dap() {
             return;
         }
         let dir = tempfile();
-        let config = LaunchConfig { name: "x".into(), kind: "gdb".into(), program: dir.join("nada").to_string_lossy().into_owned(), cwd: dir.to_string_lossy().into_owned(), ..LaunchConfig::default() };
-        let mut r = Rig::start(&Plan { root: dir, config, program_from: ProgramFrom::Known }, Breakpoints::new());
+        let start = |p: &Path| Debugger::start(&plan_for(p, &dir), &[], Arc::new(|_| {})).err().unwrap_or_default();
+        let missing = dir.join("nada");
+        assert!(start(&missing).contains("program not found") && start(&missing).contains("nada"), "{}", start(&missing));
+        // Gdb up to 17 answers "success" to these and then does nothing at all.
+        let text = dir.join("texto");
+        std::fs::write(&text, "isto nao e um programa\n").unwrap();
+        std::fs::set_permissions(&text, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(start(&text).contains("not an executable program"), "{}", start(&text));
+        let not_exec = dir.join("sem_permissao");
+        std::fs::write(&not_exec, b"\x7fELF resto").unwrap();
+        assert!(start(&not_exec).contains("not an executable program"), "{}", start(&not_exec));
+    }
+
+    #[test]
+    fn a_program_gdb_cannot_load_does_not_hang_forever() {
+        use std::os::unix::fs::PermissionsExt;
+        if !gdb_with_dap() {
+            return;
+        }
+        // Looks like a program from outside, so only the debugger can tell. Newer versions say so;
+        // older ones go quiet, and it takes the time limit to notice.
+        let dir = tempfile();
+        let fake = dir.join("falso");
+        std::fs::write(&fake, b"\x7fELF resto").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut r = Rig::start(&plan_for(&fake, &dir), Breakpoints::new());
+        r.d.start_limit = Duration::from_secs(2);
         r.until("failure", |r| r.notices.iter().any(|n| matches!(n, Notice::Failed(_))));
         assert!(!r.d.is_live());
+    }
+
+    #[test]
+    fn the_time_limit_leaves_a_program_that_started_alone() {
+        let Some((src, plan)) = c_program() else { return };
+        let mut bps = Breakpoints::new();
+        bps.insert(src, vec![Breakpoint::at(5)]);
+        let mut r = Rig::start(&plan, bps);
+        r.d.start_limit = Duration::from_millis(1);
+        r.until("stop", Rig::stopped_with_vars);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(r.d.check_started(), None);
+        assert!(r.d.is_live());
+        r.d.stop();
     }
 
     #[test]

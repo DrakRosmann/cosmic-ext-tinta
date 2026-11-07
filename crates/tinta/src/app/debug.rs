@@ -185,6 +185,14 @@ impl App {
         }
     }
 
+    /// Called now and then: some debuggers go quiet instead of saying a program couldn't start.
+    pub fn debug_tick(&mut self) -> Task<Message> {
+        match self.debug.session.as_mut().and_then(Debugger::check_started) {
+            Some(n) => self.debug_notice(n),
+            None => Task::none(),
+        }
+    }
+
     /// When everything's closing: the program mustn't outlive the editor.
     pub fn debug_shutdown(&mut self) {
         if let Some(mut s) = self.debug.session.take() {

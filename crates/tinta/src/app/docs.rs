@@ -951,7 +951,7 @@ impl App {
 
     /// Runs once a second.
     pub fn tick_slow(&mut self) -> Task<Message> {
-        let mut tasks = Vec::new();
+        let mut tasks = vec![self.debug_tick()];
         self.refresh_symbols();
         // Debounced git diff of the buffer against HEAD.
         for e in self.docs.values_mut() {

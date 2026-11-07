@@ -1137,6 +1137,24 @@ fn stopping_a_session_lets_the_next_one_run_and_breakpoints_are_remembered() {
 }
 
 #[test]
+fn a_launch_json_pointing_at_nothing_says_so() {
+    if !have_gdb_dap() {
+        return;
+    }
+    let dir = temp_dir("debugmissing");
+    std::fs::create_dir_all(dir.join(".tinta")).unwrap();
+    std::fs::write(dir.join(".tinta/launch.json"), r#"[{ "name": "x", "type": "gdb", "program": "build/nao_existe" }]"#).unwrap();
+    let src = dir.join("a.c");
+    std::fs::write(&src, "int main(void) { return 0; }\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone(), src]);
+    ui.key("f5", Modifiers::empty(), None);
+    assert!(ui.app.debug.session.is_none(), "it doesn't sit there looking like it's running");
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    assert!(ui.app.debug.console.iter().any(|l| l.text.contains("nao_existe")), "{:?}", ui.app.debug.console);
+    assert!(ui.app.toast.is_some());
+}
+
+#[test]
 fn saying_what_is_missing_when_a_language_has_no_debugger() {
     let dir = temp_dir("debugnone");
     let p = dir.join("notas.md");
