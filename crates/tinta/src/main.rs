@@ -2,6 +2,7 @@
 
 mod app;
 mod bus;
+mod fx;
 mod i18n;
 mod instance;
 mod state;
@@ -56,7 +57,7 @@ fn main() -> cosmic::iced::Result {
     };
     let window = Settings::default()
         .size(Size::new(1280.0, 820.0))
-        .size_limits(Limits::NONE.min_width(480.0).min_height(320.0))
+        .size_limits(Limits::NONE.min_width(360.0).min_height(320.0))
         .theme(theme)
         .exit_on_close(false);
     let result = cosmic::app::run::<App>(window, Flags { targets, new_session });

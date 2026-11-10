@@ -5,6 +5,7 @@
 //! of a 100k-line file costs a few lines, not the rest of the file. Work is bounded by a time
 //! budget per call, so a huge file highlights in the background of the frame loop.
 
+use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -66,7 +67,7 @@ pub struct Highlighter {
     theme: Arc<Theme>,
     initial: State,
     lines: Vec<LineInfo>,
-    checkpoints: Vec<Option<Arc<State>>>,
+    checkpoints: Vec<Option<Rc<State>>>,
     /// Every line before this one is up to date.
     frontier: usize,
     /// Past this line a matching checkpoint means the rest of the file is still right.
@@ -138,14 +139,45 @@ impl Highlighter {
             } else {
                 self.resync_after
             };
-            self.resync_after = pending.max(start_line + inserted_lines);
+            let mut resync = pending.max(start_line + inserted_lines);
+            // A parse that stopped partway left two kinds of saved states: fresh ones before where
+            // it stopped and old ones after. Going back over the fresh ones, a match would say
+            // the rest is right while the lines after the stop still wait for an earlier edit.
+            let old_frontier = self.frontier;
+            if old_frontier > start_line {
+                let stale_from = if old_frontier > start_line + removed_lines {
+                    (old_frontier as isize + delta).max(0) as usize
+                } else {
+                    start_line + inserted_lines
+                };
+                // `known` has already moved with the edit.
+                if stale_from < self.known {
+                    resync = resync.max(stale_from);
+                }
+            }
+            self.resync_after = resync;
             self.frontier = self.frontier.min(start_line);
         }
         self.text_gen += 1;
     }
 
-    /// Parses until `upto` lines are ready or the budget runs out. True if anything changed.
+    /// Parses on from the frontier until the budget runs out. True if anything changed.
     pub fn advance(&mut self, rope: &ropey::Rope, budget: Duration) -> bool {
+        self.advance_inner(rope, budget, None)
+    }
+
+    /// Parses through `line` if that's close enough to do now, so a question about it (is the
+    /// caret in a comment?) has an answer. Lines far past the frontier are left to `advance`:
+    /// getting there would spend the time on lines nobody is asking about.
+    pub fn advance_through(&mut self, rope: &ropey::Rope, line: usize, budget: Duration) -> bool {
+        const NEAR: usize = 512;
+        if line < self.frontier || line > self.frontier + NEAR {
+            return false;
+        }
+        self.advance_inner(rope, budget, Some(line))
+    }
+
+    fn advance_inner(&mut self, rope: &ropey::Rope, budget: Duration, stop_after: Option<usize>) -> bool {
         let total = rope.len_lines();
         self.lines.resize_with(total, LineInfo::default);
         self.checkpoints.resize(total, None);
@@ -182,7 +214,7 @@ impl Highlighter {
                 // They still say how this text was parsed before, so they can end the work early,
                 // but past this point they must not stay: the next call backs up to whatever it
                 // finds behind the frontier, and an old state there would color the rest wrong.
-                let on_spacing = line % CHECKPOINT_EVERY == 0;
+                let on_spacing = line.is_multiple_of(CHECKPOINT_EVERY);
                 let ahead = line >= self.frontier;
                 if ahead || on_spacing {
                     let same = self.checkpoints[line].as_deref().is_some_and(|cp| *cp == state);
@@ -195,7 +227,7 @@ impl Highlighter {
                     if !on_spacing {
                         self.checkpoints[line] = None;
                     } else if !same {
-                        self.checkpoints[line] = Some(Arc::new(state.clone()));
+                        self.checkpoints[line] = Some(Rc::new(state.clone()));
                     }
                 }
             }
@@ -207,6 +239,9 @@ impl Highlighter {
                 self.lines[line] = info;
                 self.frontier = line + 1;
                 self.known = self.known.max(self.frontier);
+            }
+            if stop_after.is_some_and(|s| line >= s) {
+                return changed;
             }
             line += 1;
         }
@@ -336,6 +371,22 @@ pub fn cosmic_theme(dark: bool) -> Theme {
     } else {
         [0x24272C, 0x6B7380, 0x7A3FD1, 0x2F7D1E, 0xB25E00, 0x0B62C4, 0x007F73, 0xB5345F, 0xC22F2F, 0x2B6C94, 0xC00000]
     };
+    build_theme(if dark { "COSMIC Dark" } else { "COSMIC Light" }, p)
+}
+
+/// GNOME's Adwaita palette (the colours of the HIG, as in GtkSourceView's Adwaita schemes),
+/// one for dark windows and one for light.
+pub fn adwaita_theme(dark: bool) -> Theme {
+    let p: [u32; 11] = if dark {
+        // fg, comment, keyword, string, number, function, type, variable, tag, operator, invalid
+        [0xDEDDDA, 0x9A9996, 0xFFA348, 0xF8E45C, 0xDC8ADD, 0x99C1F1, 0x8FF0A4, 0xF66151, 0x62A0EA, 0xC0BFBC, 0xFF7B63]
+    } else {
+        [0x241F31, 0x77767B, 0xC64600, 0x986A44, 0x813D9C, 0x1A5FB4, 0x26A269, 0xC01C28, 0x1C71D8, 0x5E5C64, 0xE01B24]
+    };
+    build_theme(if dark { "Adwaita Dark" } else { "Adwaita Light" }, p)
+}
+
+fn build_theme(name: &str, p: [u32; 11]) -> Theme {
     let [fg, comment, keyword, string, number, function, ty, variable, tag, operator, invalid] = p;
     let italic = Some(FontStyle::ITALIC);
     let bold = Some(FontStyle::BOLD);
@@ -367,16 +418,16 @@ pub fn cosmic_theme(dark: bool) -> Theme {
         item("invalid, invalid.illegal", invalid, None),
     ];
     Theme {
-        name: Some(if dark { "COSMIC Dark" } else { "COSMIC Light" }.into()),
+        name: Some(name.into()),
         author: None,
         settings: ThemeSettings { foreground: Some(color(fg)), ..ThemeSettings::default() },
         scopes,
     }
 }
 
-/// Names shown in settings: "COSMIC" follows the desktop, the rest are fixed.
+/// Names shown in settings: "COSMIC" and "Adwaita" follow the desktop, the rest are fixed.
 pub fn theme_names() -> Vec<String> {
-    let mut out = vec!["COSMIC".to_string()];
+    let mut out = vec!["COSMIC".to_string(), "Adwaita".to_string()];
     out.extend(extra_themes().iter().map(|(n, _)| n.clone()));
     out
 }
@@ -411,6 +462,12 @@ fn extra_themes() -> &'static Vec<(String, Arc<Theme>)> {
 pub fn theme_by_name(name: &str, dark: bool) -> Arc<Theme> {
     if let Some((_, t)) = extra_themes().iter().find(|(n, _)| n == name) {
         return t.clone();
+    }
+    if name == "Adwaita" {
+        static AD: OnceLock<Arc<Theme>> = OnceLock::new();
+        static AL: OnceLock<Arc<Theme>> = OnceLock::new();
+        let cell = if dark { &AD } else { &AL };
+        return cell.get_or_init(|| Arc::new(adwaita_theme(dark))).clone();
     }
     static D: OnceLock<Arc<Theme>> = OnceLock::new();
     static L: OnceLock<Arc<Theme>> = OnceLock::new();
@@ -447,6 +504,10 @@ mod tests {
     fn all_cosmic_selectors_parse_and_every_language_loads() {
         cosmic_theme(true);
         cosmic_theme(false);
+        adwaita_theme(true);
+        adwaita_theme(false);
+        assert_eq!(theme_by_name("Adwaita", true).name.as_deref(), Some("Adwaita Dark"));
+        assert_eq!(theme_by_name("Adwaita", false).name.as_deref(), Some("Adwaita Light"));
         assert!(syntax_set().syntaxes().len() > 100);
         assert!(theme_names().len() > 10);
     }
@@ -481,6 +542,52 @@ mod tests {
         run(&mut h, &r);
         assert!(!h.is_noncode(3000, 0));
         assert!(h.is_noncode(5, 0));
+    }
+
+    /// Opening a comment, parsing only part of what follows, then typing above it: the lines
+    /// past where the parse stopped still have to turn into comment.
+    #[test]
+    fn an_edit_above_a_half_done_parse_does_not_end_it_early() {
+        let mut src = String::new();
+        for i in 0..2000 {
+            src.push_str(&format!("let a{i} = {i};\n"));
+        }
+        let mut r = Rope::from_str(&src);
+        let mut h = hl("Rust");
+        run(&mut h, &r);
+        assert!(!h.is_noncode(1500, 0));
+        r.insert(r.line_to_char(10), "/*");
+        h.on_change(10, 0, 0);
+        h.advance_through(&r, 300, Duration::from_secs(5));
+        assert_eq!(h.frontier(), 301);
+        // Typing on line 5 changes nothing that carries over to the lines after it.
+        r.insert_char(r.line_to_char(5), 'x');
+        h.on_change(5, 0, 0);
+        run(&mut h, &r);
+        assert!(h.is_noncode(200, 0));
+        assert!(h.is_noncode(1500, 0), "past where the first parse stopped");
+    }
+
+    #[test]
+    fn advance_through_parses_up_to_the_line_and_no_further() {
+        let mut src = String::new();
+        for i in 0..3000 {
+            src.push_str(&format!("let a{i} = {i}; // c\n"));
+        }
+        let r = Rope::from_str(&src);
+        let mut h = hl("Rust");
+        // Close to the frontier: done, and nothing past it.
+        assert!(h.advance_through(&r, 40, Duration::from_secs(5)));
+        assert_eq!(h.frontier(), 41);
+        assert!(h.is_noncode(40, 14) && !h.is_noncode(40, 0));
+        // Far ahead of it: left for the background parse.
+        assert!(!h.advance_through(&r, 2000, Duration::from_secs(5)));
+        assert_eq!(h.frontier(), 41);
+        // Behind it: already known.
+        assert!(!h.advance_through(&r, 10, Duration::from_secs(5)));
+        run(&mut h, &r);
+        assert!(h.is_done(r.len_lines()));
+        assert!(h.is_noncode(2000, 18) && !h.is_noncode(2000, 14));
     }
 
     #[test]

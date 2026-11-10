@@ -52,16 +52,12 @@ pub enum AppTheme {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(Default)]
 pub struct LspServer {
     pub command: String,
     pub args: Vec<String>,
 }
 
-impl Default for LspServer {
-    fn default() -> Self {
-        Self { command: String::new(), args: Vec::new() }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -102,13 +98,30 @@ pub struct Settings {
     pub restore_session: bool,
     pub hot_exit: bool,
     pub show_hidden_files: bool,
+    /// Leaves out of the file tree the programs built next to their source: `prova` beside
+    /// `prova.c`.
+    pub hide_build_outputs: bool,
     pub lsp_enabled: bool,
     pub lsp_servers: HashMap<String, LspServer>,
+    /// How Ctrl+F5 runs files, by language or `.extension`, before the built-in table.
+    pub run_commands: crate::run::UserRunners,
     pub scroll_speed: f32,
     pub terminal_shell: String,
     pub terminal_font_size: f32,
     pub language: String,
     pub vim_mode: bool,
+    /// Buttons of the header bar, as command ids, left to right: beside the main menu and at the
+    /// window's controls.
+    pub header_start: Vec<String>,
+    pub header_end: Vec<String>,
+}
+
+pub fn default_header_start() -> Vec<String> {
+    vec!["view.sidebar".into()]
+}
+
+pub fn default_header_end() -> Vec<String> {
+    ["run.file", "view.split", "view.terminal", "app.settings"].map(String::from).to_vec()
 }
 
 impl Default for Settings {
@@ -150,13 +163,17 @@ impl Default for Settings {
             restore_session: true,
             hot_exit: true,
             show_hidden_files: true,
+            hide_build_outputs: true,
             lsp_enabled: true,
             lsp_servers: HashMap::new(),
+            run_commands: HashMap::new(),
             scroll_speed: 3.0,
             terminal_shell: String::new(),
             terminal_font_size: 13.0,
             language: String::new(),
             vim_mode: false,
+            header_start: default_header_start(),
+            header_end: default_header_end(),
         }
     }
 }

@@ -52,7 +52,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     r = r.push(icon_item(icons::error(), errors.to_string(), Message::PanelShow(PanelView::Problems)));
     r = r.push(icon_item(icons::warning(), warnings.to_string(), Message::PanelShow(PanelView::Problems)));
-    if let Some(p) = &app.lsp_progress {
+    if let Some(p) = app.lsp_progress.as_ref().filter(|_| !app.narrow) {
         r = r.push(container(text(p.clone()).size(12).class(theme::Text::Color(dim_text())).wrapping(cosmic::iced::widget::text::Wrapping::None)).clip(true).padding([0, 8]).max_width(420.0));
     }
     if let Some(s) = app.debug.session.as_ref().filter(|s| s.is_live()) {
@@ -86,17 +86,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
             pos.push_str(&format!("  ({} {})", p.end() - p.start(), tr("selected")));
         }
         r = r.push(item(pos, Message::Cmd(Command::GoToLine)));
-        let indent = if d.indent.spaces {
-            format!("{}: {}", tr("Spaces"), d.indent.width)
-        } else {
-            format!("{}: {}", tr("Tab Size"), d.indent.width)
-        };
-        r = r.push(item(indent, Message::Cmd(Command::ChangeIndentSize)));
-        r = r.push(item(d.encoding.name().to_string(), Message::Cmd(Command::ChangeEncoding)));
-        let eol_toggle = if d.eol == tinta_core::buffer::LineEnding::Lf { Command::SetCrlf } else { Command::SetLf };
-        r = r.push(item(d.eol.label().to_string(), Message::Cmd(eol_toggle)));
+        // A narrow window keeps where the cursor is and the language; the rest is in the palette.
+        if !app.narrow {
+            let indent = if d.indent.spaces {
+                format!("{}: {}", tr("Spaces"), d.indent.width)
+            } else {
+                format!("{}: {}", tr("Tab Size"), d.indent.width)
+            };
+            r = r.push(item(indent, Message::Cmd(Command::ChangeIndentSize)));
+            r = r.push(item(d.encoding.name().to_string(), Message::Cmd(Command::ChangeEncoding)));
+            let eol_toggle = if d.eol == tinta_core::buffer::LineEnding::Lf { Command::SetCrlf } else { Command::SetLf };
+            r = r.push(item(d.eol.label().to_string(), Message::Cmd(eol_toggle)));
+        }
         r = r.push(item(d.language.name.clone(), Message::Cmd(Command::ChangeLanguage)));
-        if e.lsp_key.is_some() {
+        if e.lsp_key.is_some() && !app.narrow {
             let name = e.lsp_key.as_deref().and_then(|k| k.split('@').next()).unwrap_or("").to_string();
             r = r.push(container(text(name).size(11).class(theme::Text::Color(dim_text()))).padding([0, 7]));
         }

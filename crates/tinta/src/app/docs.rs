@@ -102,6 +102,10 @@ impl App {
         doc.indent = self.default_indent();
         let n = self.docs.values().filter(|e| e.doc.path.is_none() && !e.is_read_only_view).count() + 1;
         doc.scratch_name = format!("{} {n}", if self.pt() { "Sem título" } else { "Untitled" });
+        // In a folder of C files, a new file is most likely C too.
+        if let Some(l) = tinta_core::language::dominant(self.file_index.iter().map(String::as_str)) {
+            doc.language = l;
+        }
         let id = self.make_entry(doc);
         self.add_tab(id);
         self.focus = Focus::Editor;
@@ -495,7 +499,8 @@ impl App {
             folder: self.folder.clone(),
             groups,
             active_group: self.active_group,
-            sidebar_visible: self.sidebar.is_some(),
+            // Hidden only because the window is narrow, it still counts as open.
+            sidebar_visible: if self.narrow { self.sidebar_wide.is_some() } else { self.sidebar.is_some() },
             sidebar_width: self.sidebar_w,
             panel_height: self.panel_h,
             recent_files: self.recent_files.clone(),
@@ -503,6 +508,8 @@ impl App {
             expanded: self.explorer.expanded.iter().cloned().collect(),
             breakpoints: self.debug.breakpoints.clone(),
             watches: self.debug.watches.clone(),
+            // Untitled text runs from a folder that goes away with the editor.
+            run_args: self.runner.args.iter().filter(|(p, _)| p.is_file() && !p.starts_with(super::run_out_dir())).map(|(p, a)| (p.clone(), a.clone())).collect(),
         }
     }
 
@@ -524,6 +531,8 @@ impl App {
             self.debug.breakpoints = s.breakpoints.clone();
             self.debug.breakpoints.retain(|p, _| p.is_file());
             self.debug.watches = s.watches.clone();
+            self.runner.args = s.run_args.clone();
+            self.runner.args.retain(|p, _| p.is_file());
             if let Some(f) = s.folder.clone().filter(|f| f.is_dir()) {
                 tasks.push(self.open_folder(f));
                 for p in &s.expanded {
@@ -588,6 +597,9 @@ impl App {
                     if let Some(text) = &backup {
                         let mut c = Cursors::default();
                         doc.replace_all(text, &mut c);
+                        // The tab's carets are saved for this text: the edit that put it there
+                        // isn't news to them, or they'd be moved again by its length.
+                        let _ = doc.take_log();
                     }
                     let id = self.make_entry(doc);
                     self.watch_parent(p);
@@ -607,6 +619,7 @@ impl App {
                 }
                 let mut c = Cursors::default();
                 doc.replace_all(text, &mut c);
+                let _ = doc.take_log();
                 self.make_entry(doc)
             }),
         };
@@ -802,15 +815,15 @@ impl App {
             self.clamp_scroll(id);
         }
         if any_change {
-            self.advance_highlighting(Duration::from_millis(3));
+            self.highlight_what_is_on_screen(Duration::from_millis(3));
             self.refresh_tab_titles();
             self.after_caret_move();
             self.mark_session_dirty();
-            self.refresh_find_matches();
+            self.refresh_find_matches_lazily();
             self.refresh_previews();
             tasks.push(self.update_title());
         } else {
-            self.refresh_find_matches();
+            self.refresh_find_matches_lazily();
         }
         Task::batch(tasks)
     }
@@ -863,7 +876,26 @@ impl App {
         e.git_stale = true;
         e.lsp_dirty = true;
         e.last_edit = Some(now);
-        e.matches_key = None;
+        // The highlighted matches move with the text until they're looked for again; the key
+        // (which has the revision) already says they're out of date.
+        // Many edits at once (replace all) over many matches: cheaper to look again.
+        if log.len().saturating_mul(e.matches.len()) > 2_000_000 {
+            e.matches.clear();
+        }
+        for c in log {
+            let old_end = c.at + c.removed;
+            e.matches.retain_mut(|m| {
+                if m.1 <= c.at {
+                    true
+                } else if m.0 >= old_end {
+                    m.0 = m.0 - c.removed + c.inserted;
+                    m.1 = m.1 - c.removed + c.inserted;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
         e.symbols_rev = None;
         e.blame = None;
         // Find-in-selection ranges follow the text.
@@ -929,6 +961,23 @@ impl App {
                 && let Some(h) = &mut e.doc.highlighter
             {
                 h.advance(&e.doc.rope, budget);
+            }
+        }
+    }
+
+    /// Right after an edit: colors the lines on screen again, so the text doesn't show a frame
+    /// with stale colors. The rest of the file is left to the frame ticks.
+    pub fn highlight_what_is_on_screen(&mut self, budget: Duration) {
+        let line_h = self.metrics.line_h.max(1.0);
+        let shown: Vec<TabId> = self.groups.iter().filter_map(Group::active_tab).collect();
+        for id in shown {
+            let Some(t) = self.tabs.get(&id) else { continue };
+            let Some(e) = self.docs.get_mut(&t.doc) else { continue };
+            let rows = t.map.row_count(&e.doc);
+            let bottom = (((t.scroll_y + t.view_h) / line_h) as usize + 1).min(rows.saturating_sub(1));
+            let last = t.map.row(&e.doc, bottom).line as usize;
+            if let Some(h) = &mut e.doc.highlighter {
+                h.advance_through(&e.doc.rope, last, budget);
             }
         }
     }

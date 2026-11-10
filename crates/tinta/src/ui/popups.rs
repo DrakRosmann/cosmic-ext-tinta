@@ -197,6 +197,35 @@ pub fn dialog(app: &App) -> Option<Element<'_, Message>> {
             .primary_action(danger("Discard Changes"))
             .secondary_action(cancel())
             .into(),
+        DialogState::HeaderBar => super::headerbar::editor(app),
+        DialogState::SetValue(row) => widget::dialog()
+            .title(format!("{}: {}", tr("New value"), row.name))
+            .control(input("42"))
+            .primary_action(primary("OK"))
+            .secondary_action(cancel())
+            .into(),
+        DialogState::RunArgs(p) => widget::dialog()
+            .title(format!("{}: {}", tr("Arguments"), file_of(p)))
+            .body(tr("As in a terminal: quotes, < input.txt and | work. Kept for this file."))
+            .control(input("--verbose < input.txt"))
+            .primary_action(primary("Run"))
+            .secondary_action(cancel())
+            .into(),
+        DialogState::TrustFolder(root, file, _) => {
+            let body = if app.pt() {
+                format!("{} tem o {file}, que roda comandos no seu computador. Confie só se você sabe de onde esta pasta veio. Sem confiar, o Tinta ignora os arquivos .tinta dela nesta sessão.", root.display())
+            } else {
+                format!("{} has {file}, which runs commands on your computer. Trust it only if you know where this folder came from. Not trusted, Tinta ignores its .tinta files this session.", root.display())
+            };
+            // Neither answer is the suggested one: trusting has to be a choice.
+            widget::dialog()
+                .title(tr("Trust this folder?"))
+                .body(body)
+                .primary_action(button::standard(tr("Trust")).on_press(Message::Dialog(DialogMsg::Primary)))
+                .secondary_action(cancel())
+                .tertiary_action(button::standard(tr("Don't Trust")).on_press(Message::Dialog(DialogMsg::Secondary)))
+                .into()
+        }
         DialogState::About => widget::dialog()
             .title(format!("Tinta {}", env!("CARGO_PKG_VERSION")))
             .body(format!("{}\n\nGPL-3.0-only\n{}", tr("A code editor for the COSMIC desktop, written in Rust."), env!("CARGO_PKG_REPOSITORY")))

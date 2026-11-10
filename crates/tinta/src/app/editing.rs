@@ -8,6 +8,10 @@ use cosmic::iced::keyboard::Modifiers;
 use tinta_core::commands::{self, EditOpts};
 use tinta_core::{Cursors, Selection, find};
 
+/// Past this size, matches are looked for again only once typing pauses for a moment.
+const LAZY_FIND_CHARS: usize = 1_000_000;
+const LAZY_FIND_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
+
 pub const FIND_INPUT: &str = "find-input";
 pub const REPLACE_INPUT: &str = "replace-input";
 /// How many matches get highlighted. Replacing isn't limited by this.
@@ -79,16 +83,7 @@ impl App {
         let Some(text) = text else { return Task::none() };
         if self.focus == Focus::Terminal {
             if let Some(s) = self.terms.get(self.active_term) {
-                let mut bytes = Vec::new();
-                let bracketed = s.is_bracketed_paste();
-                if bracketed {
-                    bytes.extend_from_slice(b"\x1b[200~");
-                }
-                bytes.extend_from_slice(text.replace('\n', "\r").as_bytes());
-                if bracketed {
-                    bytes.extend_from_slice(b"\x1b[201~");
-                }
-                s.write(bytes);
+                s.paste(&text);
             }
             return Task::none();
         }
@@ -463,7 +458,7 @@ impl App {
     }
 
     pub fn apply_font(&mut self) {
-        self.metrics = crate::state::Metrics::new(&self.settings.font_family, self.settings.font_size, self.settings.line_height);
+        self.metrics = crate::state::Metrics::new(&self.editor_font_family(), self.settings.font_size, self.settings.line_height);
     }
 
     // Find ---------------------------------------------------------------------------------
@@ -499,6 +494,16 @@ impl App {
 
     /// Recomputes matches when the query or the text changed.
     pub fn refresh_find_matches(&mut self) {
+        self.refresh_find_matches_with(false);
+    }
+
+    /// The same, except that a big file being typed into keeps its moved matches until the
+    /// typing pauses: looking through megabytes of text on every key would make each one lag.
+    pub fn refresh_find_matches_lazily(&mut self) {
+        self.refresh_find_matches_with(true);
+    }
+
+    fn refresh_find_matches_with(&mut self, lazy: bool) {
         // Vim's search lights up its matches without the find bar.
         let vim_q = self.vim_highlight.clone().filter(|_| !self.find.open);
         if !self.find.open && vim_q.is_none() {
@@ -516,6 +521,14 @@ impl App {
         let Some(e) = self.docs.get_mut(&doc_id) else { return };
         let key = (e.doc.revision, gen_id);
         if e.matches_key == Some(key) {
+            return;
+        }
+        let only_text_changed = e.matches_key.is_some_and(|(_, g)| g == gen_id);
+        if lazy
+            && only_text_changed
+            && e.doc.len_chars() > LAZY_FIND_CHARS
+            && e.last_edit.is_some_and(|t| t.elapsed() < LAZY_FIND_PAUSE)
+        {
             return;
         }
         e.matches_key = Some(key);

@@ -30,6 +30,23 @@ impl menu::Action for RowAct {
     }
 }
 
+/// "Change Value…" on a line of the debugger's variables (`false`) or watches (`true`), by its place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct VarAct(pub bool, pub usize);
+
+impl menu::Action for VarAct {
+    type Message = Message;
+    fn message(&self) -> Message {
+        Message::Debug(crate::app::DebugMsg::EditRowAt(self.0, self.1))
+    }
+}
+
+/// Right click on a variable while paused.
+pub fn var_menu(watch: bool, index: usize) -> Vec<menu::Tree<Message>> {
+    let empty: HashMap<KeyBind, VarAct> = HashMap::new();
+    menu::items(&empty, vec![Item::Button(tr("Change Value…"), None, VarAct(watch, index))])
+}
+
 fn key_of(name: &str) -> Key {
     let n = match name {
         "enter" => Named::Enter,
@@ -116,6 +133,7 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
         b(C::CloseFolder),
         d(),
         b(C::OpenSettings),
+        b(C::EditHeaderBar),
         Item::Folder(
             tr("Configuration Files"),
             vec![b(C::OpenSettingsJson), b(C::OpenKeybindings), b(C::OpenSnippets)],
@@ -317,6 +335,22 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
             ],
         ),
         tree(
+            tr("Run"),
+            vec![
+                b(C::RunFile),
+                b(C::RunWithArgs),
+                b(C::RunRerun),
+                b(C::RunStop),
+                d(),
+                b(C::RunSelection),
+                b(C::RunOpenRepl),
+                d(),
+                b(C::RunConfigure),
+                b(C::TrustFolder),
+                b(C::UntrustFolder),
+            ],
+        ),
+        tree(
             tr("Debug"),
             vec![
                 b(C::DebugStart),
@@ -327,6 +361,7 @@ pub fn menu_bar(app: &App) -> Element<'_, Message> {
                 b(C::StepOver),
                 b(C::StepInto),
                 b(C::StepOut),
+                b(C::RunToCursor),
                 d(),
                 b(C::ToggleBreakpoint),
                 b(C::BreakpointCondition),
@@ -374,7 +409,11 @@ pub fn editor_menu(app: &App) -> Vec<menu::Tree<Message>> {
             b(C::Copy),
             b(C::Paste),
             d(),
+            b(C::RunFile),
+            b(C::RunSelection),
+            d(),
             b(C::ToggleBreakpoint),
+            b(C::RunToCursor),
             b(C::ToggleComment),
             b(C::AddNextOccurrence),
             b(C::SelectAllOccurrences),

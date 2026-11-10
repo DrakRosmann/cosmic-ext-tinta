@@ -43,6 +43,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 |i| Message::Setting(S::SyntaxTheme(tinta_core::syntax::theme_names()[i].clone())),
             )),
         )
+        .add(settings::item::builder(tr("Header bar")).control(widget::button::standard(tr("Customize Header Bar…")).on_press(Message::Cmd(tinta_core::keymap::Command::EditHeaderBar))))
         .add(
             settings::item::builder(tr("Font")).control(widget::dropdown(
                 app.font_names.as_slice(),
@@ -129,7 +130,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .add(toggle("Final newline on save", s.insert_final_newline, B::FinalNewline))
         .add(toggle("Restore session", s.restore_session, B::RestoreSession))
         .add(toggle("Keep unsaved work between runs", s.hot_exit, B::HotExit))
-        .add(toggle("Show hidden files", s.show_hidden_files, B::ShowHidden));
+        .add(toggle("Show hidden files", s.show_hidden_files, B::ShowHidden))
+        .add(toggle("Hide compiled programs", s.hide_build_outputs, B::HideBuildOutputs));
 
     let code = settings::section()
         .title(tr("Code intelligence"))

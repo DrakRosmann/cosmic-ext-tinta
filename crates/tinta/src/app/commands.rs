@@ -79,7 +79,7 @@ impl App {
             }
             C::Cut => return self.copy_selection(true),
             C::Copy => return self.copy_selection(false),
-            C::Paste => return cosmic::iced::clipboard::read().map(|t| cosmic::Action::App(Message::Pasted(t))),
+            C::Paste => return crate::fx::clipboard_read(Message::Pasted),
             C::DeleteLine => self.edit(|d, c, _| cmds::delete_lines(d, c)),
             C::DuplicateSelection => self.edit(|d, c, _| cmds::duplicate(d, c)),
             C::CopyLineDown => self.edit(|d, c, _| cmds::copy_lines(d, c, true)),
@@ -239,10 +239,31 @@ impl App {
                 };
                 self.mark_session_dirty();
             }
-            C::ShowExplorer => return self.show_sidebar(SidebarView::Explorer),
+            // The tree takes the keyboard, as it does in other editors.
+            C::ShowExplorer => {
+                let t = self.show_sidebar(SidebarView::Explorer);
+                if self.folder.is_some() {
+                    self.focus_explorer();
+                    return Task::batch([t, crate::fx::focus_editor()]);
+                }
+                return t;
+            }
             C::ShowSearch => return self.open_search(false),
-            C::ShowGit => return self.show_sidebar(SidebarView::Git),
-            C::ShowOutline => return self.show_sidebar(SidebarView::Outline),
+            // These take the keyboard to their list, as the explorer does.
+            C::ShowGit => {
+                let t = self.show_sidebar(SidebarView::Git);
+                if self.focus_list(SidebarView::Git) {
+                    return Task::batch([t, crate::fx::focus_editor()]);
+                }
+                return t;
+            }
+            C::ShowOutline => {
+                let t = self.show_sidebar(SidebarView::Outline);
+                if self.focus_list(SidebarView::Outline) {
+                    return Task::batch([t, crate::fx::focus_editor()]);
+                }
+                return t;
+            }
             C::TogglePanel => {
                 if self.panel.is_some() {
                     self.panel = None;
@@ -277,6 +298,15 @@ impl App {
                 }
                 return Task::batch(t);
             }
+            C::RunFile => return self.run_file(),
+            C::RunWithArgs => return self.run_with_args(),
+            C::RunRerun => return self.run_rerun(),
+            C::RunStop => return self.run_stop(),
+            C::RunSelection => return self.run_selection(),
+            C::RunOpenRepl => return self.open_repl(),
+            C::RunConfigure => return self.run_configure(),
+            C::TrustFolder => return self.trust_folder(true),
+            C::UntrustFolder => return self.trust_folder(false),
             C::DebugStart => return self.debug_start(false),
             C::DebugStop => self.debug_stop(),
             C::DebugRestart => return self.debug_restart(),
@@ -293,6 +323,7 @@ impl App {
                 }
             }
             C::ToggleBreakpoint => return self.toggle_breakpoint_here(),
+            C::RunToCursor => return self.debug_run_to_cursor(),
             C::BreakpointCondition => return self.start_breakpoint_condition(),
             C::RemoveBreakpoints => {
                 let paths: Vec<_> = self.debug.breakpoints.keys().cloned().collect();
@@ -303,7 +334,13 @@ impl App {
                     }
                 }
             }
-            C::ShowDebug => return self.show_sidebar(SidebarView::Debug),
+            C::ShowDebug => {
+                let t = self.show_sidebar(SidebarView::Debug);
+                if self.focus_list(SidebarView::Debug) {
+                    return Task::batch([t, crate::fx::focus_editor()]);
+                }
+                return t;
+            }
             C::ShowDebugConsole => self.panel = Some(PanelView::Debug),
             C::DebugConfigure => return self.debug_configure(),
             C::DebugSelectConfig => return self.debug_pick_config(),
@@ -448,6 +485,10 @@ impl App {
                 self.dialog = Some(DialogState::Shortcuts);
             }
             C::About => self.dialog = Some(DialogState::About),
+            C::EditHeaderBar => {
+                self.dialog_input.clear();
+                self.dialog = Some(DialogState::HeaderBar);
+            }
         }
         Task::none()
     }
@@ -762,6 +803,10 @@ impl App {
             SettingMsg::Whitespace(v) => self.settings.render_whitespace = v,
             SettingMsg::CursorStyle(v) => self.settings.cursor_style = v,
             SettingMsg::AutoSave(v) => self.settings.auto_save = v,
+            SettingMsg::HeaderBar(start, end) => {
+                self.settings.header_start = start;
+                self.settings.header_end = end;
+            }
             SettingMsg::Bool(k, v) => {
                 let s = &mut self.settings;
                 match k {
@@ -792,6 +837,10 @@ impl App {
                         s.show_hidden_files = v;
                         self.reload_explorer();
                         self.index_files();
+                    }
+                    BoolSetting::HideBuildOutputs => {
+                        s.hide_build_outputs = v;
+                        self.reload_explorer();
                     }
                     BoolSetting::Lsp => s.lsp_enabled = v,
                     BoolSetting::Vim => {
@@ -827,6 +876,7 @@ impl App {
                 let d = self.dialog.take();
                 match d {
                     Some(DialogState::CloseUnsaved(id)) => self.close_tab(id),
+                    Some(DialogState::TrustFolder(root, _, then)) => self.answer_trust(root, false, then),
                     Some(DialogState::QuitUnsaved) => {
                         for e in self.docs.values_mut() {
                             e.doc.mark_saved();
@@ -857,7 +907,15 @@ impl App {
                         self.set_breakpoint_condition(path, line, input);
                         Task::none()
                     }
+                    Some(DialogState::SetValue(row)) => {
+                        if let Some(s) = &mut self.debug.session {
+                            s.set_value(&row, input.trim());
+                        }
+                        Task::none()
+                    }
                     Some(DialogState::ConfirmDiscard(entry)) => self.git_discard(entry),
+                    Some(DialogState::RunArgs(path)) => self.set_run_args(path, input),
+                    Some(DialogState::TrustFolder(root, _, then)) => self.answer_trust(root, true, then),
                     _ => Task::none(),
                 }
             }

@@ -154,7 +154,7 @@ commands! {
     PrevDiagnostic, "diag.prev", "Previous Problem", "Problema anterior", ["shift+f4"];
     // View
     ToggleSidebar, "view.sidebar", "Toggle Sidebar", "Mostrar/ocultar barra lateral", ["ctrl+b"];
-    ShowExplorer, "view.explorer", "Show Explorer", "Mostrar explorador", [];
+    ShowExplorer, "view.explorer", "Show Explorer", "Mostrar explorador", ["ctrl+shift+x"];
     ShowSearch, "view.search", "Show Search", "Mostrar busca", [];
     ShowGit, "view.git", "Show Source Control", "Mostrar controle de versão", ["ctrl+shift+g"];
     ShowOutline, "view.outline", "Show Outline", "Mostrar estrutura do arquivo", [];
@@ -166,6 +166,15 @@ commands! {
     FocusNextGroup, "view.nextGroup", "Focus Next Editor Group", "Focar próximo grupo de editores", ["ctrl+k ctrl+right"];
     FocusPrevGroup, "view.prevGroup", "Focus Previous Editor Group", "Focar grupo de editores anterior", ["ctrl+k ctrl+left"];
     CloseGroup, "view.closeGroup", "Close Editor Group", "Fechar grupo de editores", [];
+    RunFile, "run.file", "Run File", "Executar arquivo", ["ctrl+f5", "ctrl+alt+n"];
+    RunWithArgs, "run.withArgs", "Run File with Arguments…", "Executar arquivo com argumentos…", [];
+    RunRerun, "run.rerun", "Run Last File Again", "Executar de novo o último arquivo", [];
+    RunStop, "run.stop", "Stop Running", "Parar a execução", ["ctrl+alt+m"];
+    RunSelection, "run.selection", "Run Selection or Line in REPL", "Executar seleção ou linha no REPL", ["shift+enter"];
+    RunOpenRepl, "run.repl", "Open REPL", "Abrir REPL", [];
+    RunConfigure, "run.configure", "Edit run.json", "Editar run.json", [];
+    TrustFolder, "workspace.trust", "Trust This Folder", "Confiar nesta pasta", [];
+    UntrustFolder, "workspace.untrust", "Stop Trusting This Folder", "Deixar de confiar nesta pasta", [];
     DebugStart, "debug.start", "Start or Continue Debugging", "Iniciar ou continuar a depuração", ["f5"];
     DebugStop, "debug.stop", "Stop Debugging", "Parar a depuração", ["shift+f5"];
     DebugRestart, "debug.restart", "Restart Debugging", "Reiniciar a depuração", ["ctrl+shift+f5"];
@@ -173,6 +182,7 @@ commands! {
     StepOver, "debug.stepOver", "Step Over", "Próxima linha", ["f10"];
     StepInto, "debug.stepIn", "Step Into", "Entrar na função", [];
     StepOut, "debug.stepOut", "Step Out", "Sair da função", ["shift+f11"];
+    RunToCursor, "debug.runToCursor", "Run to Cursor", "Executar até o cursor", ["ctrl+f10"];
     ToggleBreakpoint, "debug.breakpoint", "Toggle Breakpoint", "Alternar breakpoint", ["f9"];
     BreakpointCondition, "debug.condition", "Conditional Breakpoint…", "Breakpoint condicional…", ["shift+f9"];
     RemoveBreakpoints, "debug.removeBreakpoints", "Remove All Breakpoints", "Remover todos os breakpoints", [];
@@ -228,6 +238,7 @@ commands! {
     CopyRelativePath, "file.copyRelPath", "Copy Relative Path", "Copiar caminho relativo", [];
     // App
     OpenSettings, "app.settings", "Settings", "Configurações", ["ctrl+,"];
+    EditHeaderBar, "app.editHeaderBar", "Customize Header Bar…", "Editar barra superior…", [];
     OpenSettingsJson, "app.settingsJson", "Open Settings (JSON)", "Abrir configurações (JSON)", [];
     OpenKeybindings, "app.keybindings", "Open Keyboard Shortcuts (JSON)", "Abrir atalhos de teclado (JSON)", [];
     OpenSnippets, "app.snippets", "Open User Snippets (JSON)", "Abrir snippets do usuário (JSON)", [];

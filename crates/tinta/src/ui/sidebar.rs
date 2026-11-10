@@ -3,7 +3,7 @@
 use super::menu::row_menu;
 use super::workspace::dim_text;
 use super::{icons, palette::highlighted};
-use crate::app::{App, ExplorerMsg, GitMsg, Message, SEARCH_INPUT, SearchMsg, SearchRow, SidebarView};
+use crate::app::{App, BoolSetting, EXPLORER_SCROLL, ExplorerMsg, Focus, GIT_INPUT, GitMsg, Message, ROW_H, SEARCH_INPUT, SearchMsg, SearchRow, SettingMsg, SidebarView};
 use crate::i18n::tr;
 use crate::state::{DocEntry, Tab};
 use cosmic::iced::{Alignment, Color, Length};
@@ -12,7 +12,50 @@ use cosmic::{Element, theme};
 use tinta_core::git::StatusEntry;
 use tinta_core::keymap::Command;
 
-const ROW_H: f32 = 26.0;
+/// The search results' scrollable, and the outline's: scrolled to keep the keyboard's row in sight.
+pub const SEARCH_SCROLL: &str = "search-scroll";
+pub const OUTLINE_SCROLL: &str = "outline-scroll";
+
+/// The row the keyboard is on in the list of `view`, when it has the keyboard.
+fn list_cursor(app: &App, view: SidebarView) -> Option<usize> {
+    (app.focus == Focus::List && app.sidebar == Some(view)).then_some(app.list_cursor)
+}
+
+/// The "⋯" menu of the explorer: what doesn't fit beside the folder's name.
+fn explorer_more(app: &App) -> Element<'_, Message> {
+    let entry = |h: icon::Handle, label: &'static str, msg: Message| -> Element<'_, Message> {
+        button::custom(row::with_children(vec![icon::icon(h).size(16).into(), text(tr(label)).size(13).into()]).spacing(10).align_y(Alignment::Center))
+            .class(theme::Button::MenuItem)
+            .width(Length::Fill)
+            .padding([6, 12])
+            .on_press(msg)
+            .into()
+    };
+    let check = |label: &'static str, on: bool, key: BoolSetting| -> Element<'_, Message> {
+        container(widget::checkbox(on).label(tr(label)).on_toggle(move |v| Message::Setting(SettingMsg::Bool(key, v)))).padding([6, 12]).into()
+    };
+    let close = |m: ExplorerMsg| Message::Explorer(m);
+    let menu = column::with_children(vec![
+        entry(icons::new_folder(), "New Folder", close(ExplorerMsg::NewFolder(None))),
+        entry(icons::refresh(), "Refresh", close(ExplorerMsg::Refresh)),
+        entry(icons::collapse(), "Collapse All", close(ExplorerMsg::CollapseAll)),
+        widget::divider::horizontal::light().into(),
+        check("Show hidden files", app.settings.show_hidden_files, BoolSetting::ShowHidden),
+        check("Hide compiled programs", app.settings.hide_build_outputs, BoolSetting::HideBuildOutputs),
+    ])
+    .width(Length::Fixed(240.0))
+    .padding([4, 0]);
+    let b = button::custom(icon::icon(icons::named("view-more-symbolic")).size(14))
+        .padding(4)
+        .class(theme::Button::Icon)
+        .on_press(Message::Explorer(ExplorerMsg::Menu(!app.explorer.menu_open)));
+    let b: Element<'_, Message> = widget::tooltip(b, text(tr("More")).size(12), widget::tooltip::Position::Bottom).into();
+    let mut p = widget::popover(b).position(widget::popover::Position::Bottom).on_close(Message::Explorer(ExplorerMsg::Menu(false)));
+    if app.explorer.menu_open {
+        p = p.popup(container(menu).class(theme::Container::Dropdown));
+    }
+    p.into()
+}
 
 pub fn view(app: &App) -> Element<'_, Message> {
     match app.sidebar {
@@ -111,10 +154,10 @@ fn explorer_view(app: &App) -> Element<'_, Message> {
     let head = header(
         name,
         vec![
+            // Two buttons in sight leave room for the folder's name; the rest wait under "⋯".
             small_btn(icons::new_file(), "New File", Message::Explorer(ExplorerMsg::NewFile(None))),
-            small_btn(icons::new_folder(), "New Folder", Message::Explorer(ExplorerMsg::NewFolder(None))),
-            small_btn(icons::refresh(), "Refresh", Message::Explorer(ExplorerMsg::Refresh)),
-            small_btn(icons::collapse(), "Collapse All", Message::Explorer(ExplorerMsg::CollapseAll)),
+            small_btn(icons::named("folder-open-symbolic"), "Open Folder", Message::Cmd(Command::OpenFolder)),
+            explorer_more(app),
         ],
     );
     let e = &app.explorer;
@@ -156,7 +199,8 @@ fn explorer_view(app: &App) -> Element<'_, Message> {
         if let Some(m) = r.git.filter(|_| !r.is_dir) {
             content = content.push(text(m.to_string()).size(11).class(theme::Text::Color(git_color(m))));
         }
-        let selected = active_path.as_ref() == Some(&r.path) || e.selected.as_ref() == Some(&r.path);
+        // With the keyboard in the tree only its row stands out, so it's clear where it is.
+        let selected = if app.focus == Focus::Explorer { e.selected.as_ref() == Some(&r.path) } else { active_path.as_ref() == Some(&r.path) || e.selected.as_ref() == Some(&r.path) };
         let b = button::custom(content)
             .class(crate::ui::row_button(selected))
             .padding([0, 8, 0, 0])
@@ -169,6 +213,7 @@ fn explorer_view(app: &App) -> Element<'_, Message> {
     column::with_children(vec![
         head,
         scrollable(col)
+            .id(widget::Id::new(EXPLORER_SCROLL))
             .on_scroll(|v| Message::Explorer(ExplorerMsg::Scrolled(v.absolute_offset().y, v.bounds().height)))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -238,7 +283,9 @@ fn search_view(app: &App) -> Element<'_, Message> {
     let accent: Color = cosmic::theme::active().cosmic().accent.base.into();
     let mut col = column::with_capacity(last - first + 2).width(Length::Fill);
     col = col.push(widget::Space::new().height(Length::Fixed(first as f32 * ROW_H)));
-    for r in &s.rows[first..last] {
+    let cursor = list_cursor(app, SidebarView::Search);
+    for (i, r) in s.rows[first..last].iter().enumerate() {
+        let on = cursor == Some(first + i);
         match r {
             SearchRow::File { path, count, collapsed } => {
                 let rel = app.folder.as_ref().and_then(|f| path.strip_prefix(f).ok()).unwrap_or(path);
@@ -255,7 +302,7 @@ fn search_view(app: &App) -> Element<'_, Message> {
                 .align_y(Alignment::Center);
                 col = col.push(
                     button::custom(content)
-                        .class(crate::ui::row_button(false))
+                        .class(crate::ui::row_button(on))
                         .padding([0, 8])
                         .height(Length::Fixed(ROW_H))
                         .width(Length::Fill)
@@ -274,7 +321,7 @@ fn search_view(app: &App) -> Element<'_, Message> {
                 ]);
                 col = col.push(
                     button::custom(content)
-                        .class(crate::ui::row_button(false))
+                        .class(crate::ui::row_button(on))
                         .padding([0, 8])
                         .height(Length::Fixed(ROW_H))
                         .width(Length::Fill)
@@ -288,6 +335,7 @@ fn search_view(app: &App) -> Element<'_, Message> {
         head,
         form.into(),
         scrollable(col)
+            .id(widget::Id::new(SEARCH_SCROLL))
             .on_scroll(|v| Message::Search(SearchMsg::Scrolled(v.absolute_offset().y, v.bounds().height)))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -296,7 +344,7 @@ fn search_view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn git_entry<'a>(e: &'a StatusEntry, staged: bool) -> Element<'a, Message> {
+fn git_entry(e: &StatusEntry, staged: bool, on: bool) -> Element<'_, Message> {
     let mark = if staged { e.index } else if e.worktree == '?' { 'A' } else { e.worktree };
     let (name, dir) = match e.path.rsplit_once('/') {
         Some((d, n)) => (n, d),
@@ -307,7 +355,7 @@ fn git_entry<'a>(e: &'a StatusEntry, staged: bool) -> Element<'a, Message> {
     r = r.push(text(name).size(13).class(theme::Text::Color(git_color(mark))).wrapping(cosmic::iced::widget::text::Wrapping::None));
     r = r.push(container(text(dir).size(11).class(theme::Text::Color(dim_text())).wrapping(cosmic::iced::widget::text::Wrapping::None)).clip(true).width(Length::Fill));
     let open = button::custom(r)
-        .class(crate::ui::row_button(false))
+        .class(crate::ui::row_button(on))
         .padding([0, 4, 0, 10])
         .height(Length::Fixed(ROW_H))
         .width(Length::Fill)
@@ -342,18 +390,22 @@ fn git_view(app: &App) -> Element<'_, Message> {
         .into();
     }
     let input = widget::text_input(tr("Message"), g.message.as_str())
+        .id(widget::Id::new(GIT_INPUT))
         .on_input(|s| Message::Git(GitMsg::MessageInput(s)))
         .on_submit(|_| Message::Git(GitMsg::Commit)).on_focus(Message::InputFocus(true)).on_unfocus(Message::InputFocus(false))
         .size(13);
     let branch = g.branch.clone().unwrap_or_default();
     let commit = button::suggested(format!("{} · {branch}", tr("Commit"))).width(Length::Fill).on_press_maybe((!g.message.trim().is_empty()).then_some(Message::Git(GitMsg::Commit)));
     let staged: Vec<&StatusEntry> = g.entries.iter().filter(|e| e.is_staged()).collect();
+    // In the order the keyboard goes through them: staged first, as `git_rows` has it.
+    let cursor = list_cursor(app, SidebarView::Git);
+    let n_staged = staged.len();
     let changed: Vec<&StatusEntry> = g.entries.iter().filter(|e| e.is_unstaged()).collect();
     let mut col = column::with_capacity(g.entries.len() + 4).width(Length::Fill);
     if !staged.is_empty() {
         col = col.push(container(text(format!("{} ({})", tr("Staged Changes"), staged.len())).size(12).font(cosmic::font::semibold())).padding([8, 12, 4, 12]));
-        for e in staged {
-            col = col.push(git_entry(e, true));
+        for (i, e) in staged.iter().enumerate() {
+            col = col.push(git_entry(e, true, cursor == Some(i)));
         }
     }
     col = col.push(
@@ -366,8 +418,8 @@ fn git_view(app: &App) -> Element<'_, Message> {
     if changed.is_empty() {
         col = col.push(container(text(tr("No changes")).size(12).class(theme::Text::Color(dim_text()))).padding([2, 14]));
     }
-    for e in changed {
-        col = col.push(git_entry(e, false));
+    for (i, e) in changed.into_iter().enumerate() {
+        col = col.push(git_entry(e, false, cursor == Some(n_staged + i)));
     }
     column::with_children(vec![
         head,
@@ -375,17 +427,6 @@ fn git_view(app: &App) -> Element<'_, Message> {
         scrollable(col).width(Length::Fill).height(Length::Fill).into(),
     ])
     .into()
-}
-
-/// What's listed in the outline: LSP's list when it's current, otherwise the tree's or the patterns'.
-pub fn symbols_of(e: &DocEntry) -> Vec<(String, String, usize, usize)> {
-    if let Some((rev, list)) = &e.lsp_symbols
-        && *rev == e.doc.revision
-        && !list.is_empty()
-    {
-        return list.iter().map(|s| (s.name.clone(), s.detail.clone(), s.line, s.depth)).collect();
-    }
-    e.symbols.iter().map(|s| (s.name.clone(), s.kind.to_string(), s.line, s.depth)).collect()
 }
 
 /// The symbols around the caret, outermost first, for the breadcrumbs.
@@ -415,7 +456,8 @@ fn outline_view(app: &App) -> Element<'_, Message> {
     let Some((t, e)) = app.active() else {
         return column::with_children(vec![head, container(text(tr("No symbols")).size(13).class(theme::Text::Color(dim_text()))).padding(14).into()]).into();
     };
-    let symbols = symbols_of(e);
+    let symbols = crate::app::symbols_of(e);
+    let cursor = list_cursor(app, SidebarView::Outline);
     let line = e.doc.char_to_line(t.cursors.head());
     let current = symbols.iter().rposition(|s| s.2 <= line);
     let mut col = column::with_capacity(symbols.len()).width(Length::Fill);
@@ -433,12 +475,12 @@ fn outline_view(app: &App) -> Element<'_, Message> {
         .align_y(Alignment::Center);
         col = col.push(
             button::custom(content)
-                .class(crate::ui::row_button(Some(i) == current))
+                .class(crate::ui::row_button(cursor.map_or(Some(i) == current, |c| c == i)))
                 .padding([0, 8])
                 .height(Length::Fixed(ROW_H))
                 .width(Length::Fill)
                 .on_press(Message::OutlineJump(l)),
         );
     }
-    column::with_children(vec![head, scrollable(col).width(Length::Fill).height(Length::Fill).into()]).into()
+    column::with_children(vec![head, scrollable(col).id(widget::Id::new(OUTLINE_SCROLL)).on_scroll(|v| Message::OutlineScrolled(v.absolute_offset().y, v.bounds().height)).width(Length::Fill).height(Length::Fill).into()]).into()
 }

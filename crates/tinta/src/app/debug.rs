@@ -35,6 +35,10 @@ pub struct DebugPanel {
     pub selected: Option<String>,
     /// A build under way, and what to run when it succeeds.
     pub after_build: Option<(u64, Plan)>,
+    /// The terminal the program runs in, by its id in the panel.
+    pub tty: Option<(u64, dap::ProgramTty)>,
+    /// "Run to cursor" with nothing running: the place to go once the session first stops.
+    pub run_to_after_start: Option<(PathBuf, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +46,10 @@ pub enum DebugMsg {
     Incoming(u64, Incoming),
     Ready(Result<Plan, String>),
     ToggleRow(VarRow),
+    /// Asks for a new value for a line of the variables tree.
+    EditValue(VarRow),
+    /// The same, for the line at a place: of the watches (`true`) or the variables.
+    EditRowAt(bool, usize),
     SelectFrame(usize),
     SelectThread(i64),
     Input(String),
@@ -109,7 +117,12 @@ impl App {
             Some((_, e)) => (e.doc.path.clone(), e.doc.language.name.clone()),
             None => (None, String::new()),
         };
-        let mut plan = match dap::plan(&root, file.as_deref(), &language, self.debug.selected.as_deref()) {
+        let then = if stop_on_entry { tinta_core::keymap::Command::RunToCursor } else { tinta_core::keymap::Command::DebugStart };
+        let own = match self.project_files_ok(&root, dap::LAUNCH_PATH, then) {
+            Ok(b) => b,
+            Err(t) => return t,
+        };
+        let mut plan = match dap::plan(&root, file.as_deref(), &language, self.debug.selected.as_deref(), own) {
             Ok(p) => p,
             Err(e) => return self.debug_problem(e),
         };
@@ -151,13 +164,69 @@ impl App {
         self.debug.generation += 1;
         let generation = self.debug.generation;
         let sink: dap::Sink = Arc::new(move |m| bus::send(Message::Debug(DebugMsg::Incoming(generation, m))));
-        match Debugger::start(&plan, &self.debug.watches, sink) {
+        let tty = match plan.config.wants_terminal().then(dap::open_tty) {
+            Some(Ok(t)) => Some(t),
+            Some(Err(e)) => {
+                self.debug.print("stderr", &format!("{}: {e}\n", tr("No terminal for the program")));
+                None
+            }
+            None => None,
+        };
+        match Debugger::start(&plan, &self.debug.watches, sink, tty.as_ref()) {
             Ok(s) => {
                 self.debug.session = Some(s);
-                self.panel = Some(PanelView::Debug);
-                Task::none()
+                match tty {
+                    Some(t) => self.program_terminal(t, &plan.config.name),
+                    None => {
+                        self.panel = Some(PanelView::Debug);
+                        Task::none()
+                    }
+                }
             }
             Err(e) => self.debug_problem(e),
+        }
+    }
+
+    /// The program's terminal in the panel, in place of the last run's.
+    fn program_terminal(&mut self, tty: dap::ProgramTty, name: &str) -> Task<Message> {
+        if let Some((old, _)) = self.debug.tty.take()
+            && let Some(i) = self.terms.iter().position(|t| t.id == old)
+        {
+            self.terms.remove(i);
+        }
+        let id = self.new_id();
+        let session = tty.master.try_clone().map_err(|e| e.to_string()).and_then(|m| crate::ui::terminal::Session::attach(id, m, format!("{}: {name}", tr("Program"))));
+        match session {
+            Ok(s) => {
+                self.terms.push(s);
+                self.active_term = self.terms.len() - 1;
+                self.panel = Some(PanelView::Terminal);
+                self.debug.tty = Some((id, tty));
+            }
+            Err(e) => {
+                self.debug.print("stderr", &format!("{}: {e}\n", tr("No terminal for the program")));
+                self.panel = Some(PanelView::Debug);
+            }
+        }
+        Task::none()
+    }
+
+    /// Ctrl+F10: on to the line with the cursor. With nothing running, a session starts and
+    /// goes there from the start of the program.
+    pub fn debug_run_to_cursor(&mut self) -> Task<Message> {
+        let Some((path, line)) = self.active_path_line() else { return self.toast(tr("Save the file first")) };
+        let debug = &mut self.debug;
+        match &mut debug.session {
+            Some(s) if s.is_stopped() => {
+                let list = debug.breakpoints.get(&path).cloned().unwrap_or_default();
+                s.run_to(&path, line, &list);
+                Task::none()
+            }
+            Some(s) if s.is_live() => self.toast(tr("Pause the program first")),
+            _ => {
+                self.debug.run_to_after_start = Some((path, line));
+                self.debug_start(true)
+            }
         }
     }
 
@@ -277,6 +346,11 @@ impl App {
 
     pub fn debug_pick_config(&mut self) -> Task<Message> {
         let Some(root) = self.task_root() else { return self.toast(tr("No folder open")) };
+        match self.project_files_ok(&root, dap::LAUNCH_PATH, tinta_core::keymap::Command::DebugSelectConfig) {
+            Ok(true) => {}
+            Ok(false) => return self.toast(tr("This folder isn't trusted: its launch.json is ignored")),
+            Err(t) => return t,
+        }
         let configs = match dap::load_configs(&root) {
             Ok(c) => c,
             Err(e) => return self.debug_problem(e),
@@ -293,7 +367,9 @@ impl App {
 
     /// The value under the pointer, while stopped. True if the debugger was asked.
     pub fn debug_hover(&mut self, line_text: &str, col: usize, pos: usize) -> bool {
-        let Some(s) = self.debug.session.as_mut().filter(|s| s.is_stopped()) else { return false };
+        // Right after a step the new stack may not be in yet: asked without a frame, the
+        // debugger looks in the wrong place.
+        let Some(s) = self.debug.session.as_mut().filter(|s| s.is_stopped() && s.current_frame_id().is_some()) else { return false };
         match dap::hover_expression(line_text, col) {
             Some(expr) => {
                 s.hover(&expr, pos);
@@ -320,6 +396,21 @@ impl App {
                 if let Some(s) = &mut self.debug.session {
                     s.toggle_row(&row);
                 }
+            }
+            DebugMsg::EditRowAt(watch, i) => {
+                let row = self.debug.session.as_ref().and_then(|s| if watch { s.watch_rows().into_iter().nth(i).map(|(_, r)| r) } else { s.variable_rows().into_iter().nth(i) });
+                if let Some(row) = row {
+                    return self.on_debug(DebugMsg::EditValue(row));
+                }
+            }
+            DebugMsg::EditValue(row) => {
+                if !self.debug.session.as_ref().is_some_and(|s| s.can_set(&row)) {
+                    return self.toast(tr("This debugger can't change this value"));
+                }
+                self.dialog_input = row.value.clone();
+                self.dialog = Some(DialogState::SetValue(row));
+                self.focus = Focus::Input;
+                return crate::fx::focus_all(super::DIALOG_INPUT);
             }
             DebugMsg::SelectFrame(i) => {
                 if let Some(s) = &mut self.debug.session {
@@ -393,7 +484,18 @@ impl App {
                 self.jump_to(line, column);
                 t
             }
-            Notice::Stopped | Notice::Continued => {
+            Notice::Stopped => {
+                self.hover = None;
+                if let Some((path, line)) = self.debug.run_to_after_start.take() {
+                    let debug = &mut self.debug;
+                    if let Some(s) = debug.session.as_mut().filter(|s| s.is_stopped()) {
+                        let list = debug.breakpoints.get(&path).cloned().unwrap_or_default();
+                        s.run_to(&path, line, &list);
+                    }
+                }
+                Task::none()
+            }
+            Notice::Continued => {
                 self.hover = None;
                 Task::none()
             }
@@ -404,10 +506,12 @@ impl App {
                 };
                 self.debug.print("console", &format!("{text}\n"));
                 self.debug.session = None;
+                self.debug.run_to_after_start = None;
                 self.toast(text)
             }
             Notice::Failed(message) => {
                 self.debug.session = None;
+                self.debug.run_to_after_start = None;
                 self.debug_problem(message)
             }
             Notice::Hover { expression, value, pos } => {
