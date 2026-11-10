@@ -36,6 +36,8 @@ pub enum Pending {
 pub enum CompletionSource {
     Lsp(Box<CompletionItem>),
     Word,
+    /// A keyword or built-in of the file's language: picked with Enter like the server's items.
+    Language,
     Snippet(String),
 }
 
@@ -93,6 +95,26 @@ fn sink() -> core_lsp::Sink {
 }
 
 impl App {
+    /// The banner for the file in front, when its language has no server: its LSP id, what it
+    /// says, and whether there's a command to copy.
+    pub fn lsp_hint(&self) -> Option<(String, String, bool)> {
+        let (_, e) = self.active()?;
+        let lang = e.doc.language.lsp_id?;
+        if self.lsp_hint_closed.contains(lang) || !self.settings.lsp_enabled {
+            return None;
+        }
+        let (name, h) = self.lsp_missing.get(lang)?;
+        let mut text = if crate::i18n::is_portuguese() {
+            format!("Para sugestões completas em {name}, instale o {}", h.server)
+        } else {
+            format!("For full suggestions in {name}, install {}", h.server)
+        };
+        if let Some(c) = &h.command {
+            text.push_str(&format!(": {c}"));
+        }
+        Some((lang.to_string(), text, h.command.is_some()))
+    }
+
     fn server_for(&self, doc: DocId) -> Option<&LspEntry> {
         let key = self.docs.get(&doc)?.lsp_key.as_ref()?;
         self.lsp.get(key).filter(|e| e.ready)
@@ -106,7 +128,19 @@ impl App {
         let Some(e) = self.docs.get(&doc) else { return Task::none() };
         let Some(path) = e.doc.path.clone() else { return Task::none() };
         let Some(lang) = e.doc.language.lsp_id else { return Task::none() };
-        let Some((cmd, args)) = core_lsp::resolve_server(lang, &self.settings.lsp_servers) else { return Task::none() };
+        let Some((cmd, args)) = core_lsp::resolve_server(lang, &self.settings.lsp_servers) else {
+            // Nothing installed: say so, and how to fix it. Not when the user turned it off.
+            let hint = match self.settings.lsp_servers.get(lang) {
+                Some(o) if o.command.is_empty() => None,
+                Some(o) => Some(core_lsp::InstallHint { server: o.command.clone(), command: None }),
+                None => core_lsp::install_hint(lang),
+            };
+            if let Some(h) = hint {
+                self.lsp_missing.insert(lang.to_string(), (e.doc.language.name.clone(), h));
+            }
+            return Task::none();
+        };
+        self.lsp_missing.remove(lang);
         let root = core_lsp::find_root(&path, self.folder.as_deref());
         let key = format!("{cmd}@{}", root.display());
         if let Some(entry) = self.lsp.get_mut(&key) {
@@ -445,13 +479,57 @@ impl App {
         let Some(tab_id) = self.active_tab_id() else { return Task::none() };
         let snippets = if settings_snip { self.snippets_for_active() } else { Vec::new() };
         let Some(t) = self.tabs.get(&tab_id) else { return Task::none() };
-        let Some(e) = self.docs.get(&t.doc) else { return Task::none() };
         let head = t.cursors.head();
+        // In a comment or a string, the language's words and snippets are only in the way. The
+        // line just typed on is parsed first, so that's known now and not a frame later.
+        let doc_id = t.doc;
+        let in_text = match self.docs.get_mut(&doc_id) {
+            Some(e) => {
+                let anchor = commands::word_at(&e.doc, head).0.min(head);
+                let (line, col) = e.doc.line_col(anchor);
+                let rope = e.doc.rope.clone();
+                e.doc.highlighter.as_mut().is_some_and(|h| {
+                    h.advance_through(&rope, line, std::time::Duration::from_millis(3));
+                    h.is_noncode(line, col)
+                })
+            }
+            None => return Task::none(),
+        };
+        let snippets = if in_text { Vec::new() } else { snippets };
+        let Some(e) = self.docs.get(&doc_id) else { return Task::none() };
         let anchor = commands::word_at(&e.doc, head).0.min(head);
         let prefix = e.doc.slice_string(anchor, head);
         let mut entries = Vec::new();
+        // The language's own words, by what's typed so far: keywords, and what comes with it.
+        let lower = prefix.to_lowercase();
+        let language_words = if in_text { Vec::new() } else { tinta_core::keywords::for_language(&e.doc.language.name) };
+        if !prefix.is_empty() {
+            for (w, kind) in &language_words {
+                if !w.to_lowercase().starts_with(&lower) || *w == prefix {
+                    continue;
+                }
+                let (tag, detail, rank) = match kind {
+                    tinta_core::keywords::Kind::Keyword => ("kw", tr("keyword"), 0),
+                    tinta_core::keywords::Kind::Builtin => ("std", tr("built-in"), 1),
+                };
+                // `p` puts `pub` and `print!` before `PartialEq`, and keywords before the rest.
+                let case = if w.starts_with(prefix.as_str()) { 0 } else { 1 };
+                entries.push(CompletionEntry {
+                    filter: w.to_string(),
+                    sort: format!("x{case}{rank}{w}"),
+                    label: w.to_string(),
+                    detail: detail.to_string(),
+                    kind: tag,
+                    source: CompletionSource::Language,
+                    positions: Vec::new(),
+                });
+            }
+        }
         if settings_word && !prefix.is_empty() {
             for w in commands::words_with_prefix(&e.doc, &prefix, head, 30) {
+                if language_words.iter().any(|(k, _)| *k == w) {
+                    continue;
+                }
                 entries.push(CompletionEntry {
                     filter: w.clone(),
                     sort: format!("z{w}"),
@@ -541,7 +619,7 @@ impl App {
         let Some(c) = self.completion.take() else { return Task::none() };
         let Some(entry) = c.visible.get(c.selected).and_then(|i| c.entries.get(*i)).cloned() else { return Task::none() };
         match entry.source {
-            CompletionSource::Word => {
+            CompletionSource::Word | CompletionSource::Language => {
                 let label = entry.label;
                 self.replace_range_with(c.anchor, &label);
             }
@@ -571,7 +649,8 @@ impl App {
         let text = text.to_string();
         self.edit(|d, c, _| {
             let e = c.head();
-            d.apply(vec![tinta_core::Edit::new(start, e, text)], c, tinta_core::EditKind::Other, |m, c| {
+            // The caret may have gone back past where the word began: then nothing is replaced.
+            d.apply(vec![tinta_core::Edit::new(start.min(e), e, text)], c, tinta_core::EditKind::Other, |m, c| {
                 c.set_single(Selection::cursor(m.after_edit(0)));
             });
         });
@@ -603,16 +682,18 @@ impl App {
         };
         let parsed = reindent_stops(&parsed, &indent, &unit);
         let text = parsed.text.clone();
-        let mut base = 0;
+        let mut base = None;
         self.edit(|d, c, _| {
             let p = c.primary();
-            let a = start.unwrap_or(p.start());
             let b = p.end();
+            let a = start.unwrap_or(p.start()).min(b);
             d.apply(vec![tinta_core::Edit::new(a, b, text)], c, tinta_core::EditKind::Other, |m, c| {
-                base = m.before_edit(0);
+                base = Some(m.before_edit(0));
                 c.set_single(Selection::cursor(m.after_edit(0)));
             });
         });
+        // Read-only text: nothing went in, so there are no stops to go to.
+        let Some(base) = base else { return };
         let session = snippet::Session::new(&parsed, base);
         if let Some((t, _)) = self.active_mut() {
             match session {
@@ -834,7 +915,7 @@ impl App {
                 c.entries.retain(|e| !matches!(e.source, CompletionSource::Lsp(_)));
                 let names: std::collections::HashSet<String> = items.iter().map(|i| i.label.trim().to_string()).collect();
                 // Words the server already offers aren't worth listing twice.
-                c.entries.retain(|e| !(matches!(e.source, CompletionSource::Word) && names.contains(&e.label)));
+                c.entries.retain(|e| !(matches!(e.source, CompletionSource::Word | CompletionSource::Language) && names.contains(&e.label)));
                 for i in items {
                     c.entries.push(CompletionEntry {
                         label: i.label.trim().to_string(),

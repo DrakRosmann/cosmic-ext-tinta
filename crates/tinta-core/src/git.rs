@@ -2,15 +2,10 @@
 
 use similar::{ChangeTag, DiffTag, TextDiff};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
+    let out = crate::host::command("git", args, Some(root), &[("GIT_OPTIONAL_LOCKS", "0"), ("GIT_TERMINAL_PROMPT", "0")])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| e.to_string())?;
@@ -244,7 +239,11 @@ impl LineDiff {
 
 /// What changed between the committed file and the buffer, for the gutter.
 pub fn line_diff(base: &str, current: &str) -> LineDiff {
-    let diff = TextDiff::from_lines(base, current);
+    // Runs on the UI thread while typing pauses: a file rewritten from top to bottom gets a
+    // rougher answer instead of a stall.
+    let diff = TextDiff::configure()
+        .deadline(std::time::Instant::now() + std::time::Duration::from_millis(150))
+        .diff_lines(base, current);
     let mut out = LineDiff::default();
     for op in diff.ops() {
         let (old, new) = (op.old_range(), op.new_range());
@@ -336,6 +335,21 @@ mod tests {
         let d = line_diff("a\nb\nc\n", "a\nc\n");
         assert_eq!(d.mark_at(1), Some(LineMark::Deleted));
         assert_eq!(hunk_base_text("a\nb\nc\n", &d.hunks[0]), "b\n");
+    }
+
+    #[test]
+    fn a_file_rewritten_throughout_does_not_stall_the_gutter() {
+        let base: String = (0..60_000).map(|i| format!("line {i}\n")).collect();
+        let current: String = (0..60_000).map(|i| format!("other {}\n", i * 7 % 60_000)).collect();
+        let t = std::time::Instant::now();
+        let d = line_diff(&base, &current);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert!(!d.marks.is_empty());
+        // Small changes still come out exact.
+        let mut one = base.clone();
+        one.insert_str(base.find("line 30000").unwrap(), "new\n");
+        let d = line_diff(&base, &one);
+        assert_eq!(d.marks, vec![(30_000, LineMark::Added)]);
     }
 
     #[test]

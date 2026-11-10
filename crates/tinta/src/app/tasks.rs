@@ -87,7 +87,11 @@ impl App {
 
     pub fn run_task_picker(&mut self) -> AppTask<Message> {
         let Some(root) = self.task_root() else { return self.toast(tr("No folder open")) };
-        let (list, problem) = tasks::detect(&root);
+        let own = match self.project_files_ok(&root, tasks::TASKS_PATH, tinta_core::keymap::Command::RunTask) {
+            Ok(b) => b,
+            Err(t) => return t,
+        };
+        let (list, problem) = tasks::detect(&root, own);
         if let Some(p) = problem {
             self.output.push(p);
         }
@@ -109,7 +113,11 @@ impl App {
 
     pub fn run_default_build(&mut self) -> AppTask<Message> {
         let Some(root) = self.task_root() else { return self.toast(tr("No folder open")) };
-        let (list, _) = tasks::detect(&root);
+        let own = match self.project_files_ok(&root, tasks::TASKS_PATH, tinta_core::keymap::Command::RunBuild) {
+            Ok(b) => b,
+            Err(t) => return t,
+        };
+        let (list, _) = tasks::detect(&root, own);
         match tasks::default_build(&list).cloned() {
             Some(t) => self.run_task(t),
             None => self.toast(tr("No tasks found in this folder")),
@@ -132,7 +140,8 @@ impl App {
 
     pub fn run_task(&mut self, task: Task) -> AppTask<Message> {
         self.stop_task();
-        let Some(root) = self.task_root() else { return AppTask::none() };
+        // A file with no folder, like untitled text being run, builds where the task says.
+        let Some(root) = self.task_root().or_else(|| task.cwd.as_ref().map(PathBuf::from)) else { return AppTask::none() };
         let save = self.save_all_dirty_named();
         self.clear_task_problems();
         let cwd = task.cwd.as_ref().map(|c| root.join(c)).unwrap_or_else(|| root.clone());
@@ -146,11 +155,7 @@ impl App {
         self.tasks.last = Some(task.clone());
         self.panel = Some(PanelView::Tasks);
 
-        let child = Command::new("sh")
-            .arg("-c")
-            .arg(&task.command)
-            .current_dir(&cwd)
-            .env("TERM", "dumb")
+        let child = tinta_core::host::command("sh", ["-c", task.command.as_str()], Some(&cwd), &[("TERM", "dumb")])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -210,9 +215,10 @@ impl App {
     fn attach_problem(&mut self, path: &Path, p: &Problem) {
         let Some(id) = self.doc_by_path(path) else { return };
         let Some(e) = self.docs.get_mut(&id) else { return };
+        // The file may have changed since it was built: the line can be gone.
         let start = e.doc.pos(p.location.line, p.location.col);
         let (a, b) = tinta_core::commands::word_at(&e.doc, start);
-        let end = if a == b { (start + 1).min(e.doc.line_end(p.location.line)) } else { b };
+        let end = if a == b { (start + 1).min(e.doc.line_end(e.doc.char_to_line(start))) } else { b };
         e.diags.push(Diag {
             start: if a == b { start } else { a },
             end,
@@ -265,6 +271,12 @@ impl App {
                 self.tasks.running = None;
                 self.tasks.exit = Some(if code == Some(0) { Ok(()) } else { Err(code) });
                 self.debug_build_finished(g, code == Some(0));
+                // Built to run: the program says the rest.
+                let to_run = code == Some(0) && self.runner.after_build.as_ref().is_some_and(|(rg, _)| *rg == g);
+                let run = self.run_build_finished(g, code == Some(0));
+                if to_run {
+                    return run;
+                }
                 let name = self.tasks.last.as_ref().map(|t| t.name.clone()).unwrap_or_default();
                 let errors = self.tasks.problems.iter().filter(|(_, p)| p.severity == Severity::Error).count();
                 let warnings = self.tasks.problems.len() - errors;

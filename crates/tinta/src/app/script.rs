@@ -37,6 +37,8 @@ pub enum Step {
     Folder(PathBuf),
     Shot(PathBuf),
     Dump(PathBuf),
+    /// As if the window were narrow (`narrow on`) or wide again (`narrow off`).
+    Narrow(bool),
     Quit,
 }
 
@@ -72,6 +74,7 @@ pub fn start() {
                 "folder" => Step::Folder(rest.trim().into()),
                 "shot" => Step::Shot(rest.trim().into()),
                 "dump" => Step::Dump(rest.trim().into()),
+                "narrow" => Step::Narrow(rest.trim() != "off"),
                 "quit" => Step::Quit,
                 other => {
                     eprintln!("script: unknown step {other}");
@@ -175,6 +178,7 @@ impl App {
                 let _ = std::fs::write(path, self.dump_state().to_string());
                 Task::none()
             }
+            Step::Narrow(on) => cosmic::Application::update(self, Message::Narrow(on)),
             Step::Quit => {
                 self.persist_on_quit();
                 cosmic::iced::exit()
@@ -212,6 +216,11 @@ impl App {
                 "breakpoints": self.debug.breakpoints.iter().map(|(p, l)| json!([p, l.iter().map(|b| json!([b.line, format!("{:?}", b.state)])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
                 "console": self.debug.console.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
             },
+            "title": self.title,
+            "settings_open": self.settings_open,
+            "dialog": self.dialog.as_ref().map(|d| format!("{d:?}")),
+            "focus": format!("{:?}", self.focus),
+            "terminals_titles": self.terms.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
             "sidebar": self.sidebar.map(|s| format!("{s:?}")),
             "panel": self.panel.map(|s| format!("{s:?}")),
             "palette": self.palette.as_ref().map(|p| json!({

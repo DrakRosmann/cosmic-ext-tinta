@@ -136,3 +136,27 @@ pub fn step_in() -> icon::Handle {
 pub fn step_out() -> icon::Handle {
     bundled(svg!(r#"<path d="M8 9.6V2.2M4.8 5 8 1.8 11.2 5"/><circle cx="8" cy="13" r="1.3"/>"#))
 }
+
+pub fn sidebar() -> icon::Handle {
+    bundled(svg!(r#"<rect x="2" y="2.8" width="12" height="10.4" rx="1.5"/><path d="M6 2.8v10.4M3.6 5.2h1M3.6 7.2h1"/>"#))
+}
+
+pub fn panel_bottom() -> icon::Handle {
+    bundled(svg!(r#"<rect x="2" y="2.8" width="12" height="10.4" rx="1.5"/><path d="M2 9.6h12"/>"#))
+}
+
+pub fn grid() -> icon::Handle {
+    bundled(svg!(r#"<rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/>"#))
+}
+
+pub fn eye() -> icon::Handle {
+    bundled(svg!(r#"<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>"#))
+}
+
+pub fn keyboard() -> icon::Handle {
+    bundled(svg!(r#"<rect x="1.5" y="4" width="13" height="8" rx="1.4"/><path d="M4 6.5h.5M6.5 6.5H7M9 6.5h.5M11.5 6.5h.5M5 9.5h6"/>"#))
+}
+
+pub fn pencil() -> icon::Handle {
+    bundled(svg!(r#"<path d="M10.5 2.5l3 3-8 8H2.5v-3z"/><path d="M9 4l3 3"/>"#))
+}

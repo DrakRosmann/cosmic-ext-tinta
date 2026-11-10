@@ -59,6 +59,7 @@ impl Ui {
         // Earlier tests may have saved settings; each starts from the defaults.
         let _ = std::fs::remove_file(tinta_core::settings::settings_path());
         let _ = bus::drain();
+        crate::ui::terminal::log::clear();
         let flags = Flags { targets: targets.into_iter().map(|p| (p, None)).collect(), new_session: true };
         let (app, _) = App::init(Core::default(), flags);
         let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
@@ -169,6 +170,21 @@ impl Ui {
 
     fn text(&self) -> String {
         self.app.active().unwrap().1.doc.rope.to_string()
+    }
+
+    fn msg(&mut self, m: Message) {
+        let _ = self.app.update(m);
+        self.frame();
+    }
+
+    /// The tasks iced would run go nowhere here; what they'd lead to comes through the frames.
+    fn run(&mut self, _t: cosmic::app::Task<Message>) {
+        self.frame();
+    }
+
+    fn close(self) -> MutexGuard<'static, ()> {
+        let Ui { _guard, .. } = self;
+        _guard
     }
 
     fn cmd(&mut self, c: Command) {
@@ -1033,17 +1049,50 @@ fn debugging_a_program_through_the_interface() {
     ui.key("f5", Modifiers::empty(), None);
     assert_eq!(ui.app.sidebar, Some(crate::app::SidebarView::Debug));
     wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().is_some_and(|s| !s.variable_rows().is_empty()));
-    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
+    // The program has a terminal of its own in the panel; what it prints comes out there.
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Terminal));
+    let term = ui.app.debug.tty.as_ref().expect("the program's terminal").0;
+    assert!(ui.app.terms.iter().any(|t| t.id == term && t.title.ends_with("prog.c")), "{:?}", ui.app.terms.iter().map(|t| &t.title).collect::<Vec<_>>());
     let loc = |ui: &Ui| ui.app.debug.session.as_ref().unwrap().exec_location().map(|(_, l, top)| (l, top));
     assert_eq!(loc(&ui), Some((5, true)));
     assert_eq!(ui.head().0, 5, "the caret goes to where it stopped");
     assert_eq!(ui.app.debug.breakpoints[&src][0].state, tinta_core::dap::BpState::Verified);
+
+    // The variables by keyboard: the first row is a scope, Down reaches `n`, Enter on a plain
+    // value asks for a new one, Left goes back up to the scope.
+    wait_long(&mut ui, |a| a.debug.session.as_ref().is_some_and(|s| s.variable_rows().iter().any(|r| r.path == "Arguments/n")));
+    ui.cmd(Command::ShowDebug);
+    assert_eq!(ui.app.focus, Focus::List);
+    let rows = ui.app.debug.session.as_ref().unwrap().variable_rows();
+    assert!(rows[0].is_scope, "{:?}", rows.iter().map(|r| &r.path).collect::<Vec<_>>());
+    let n = rows.iter().position(|r| r.path == "Arguments/n").expect("n");
+    for _ in 0..n {
+        ui.key("down", Modifiers::empty(), None);
+    }
+    ui.key("enter", Modifiers::empty(), None);
+    assert!(matches!(&ui.app.dialog, Some(crate::app::DialogState::SetValue(r)) if r.path == "Arguments/n"));
+    let _ = ui.app.update(Message::Dialog(crate::app::DialogMsg::Cancel));
+    ui.app.focus = Focus::List;
+    ui.key("left", Modifiers::empty(), None);
+    assert!(rows[ui.app.list_cursor].is_scope);
+    ui.key("escape", Modifiers::empty(), None);
+    assert_eq!(ui.app.focus, Focus::Editor);
 
     // F10 steps, and the panels draw whatever comes.
     ui.key("f10", Modifiers::empty(), None);
     let value = |a: &App, path: &str| a.debug.session.as_ref()?.variable_rows().into_iter().find(|r| r.path == path).map(|r| r.value);
     wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().unwrap().exec_location().is_some_and(|l| l.1 == 6) && value(a, "Locals/r").is_some());
     assert_eq!(value(&ui.app, "Locals/r").as_deref(), Some("6"));
+
+    // A new value for r, through the dialog: dobro now returns 20.
+    let row = ui.app.debug.session.as_ref().unwrap().variable_rows().into_iter().find(|r| r.path == "Locals/r").unwrap();
+    let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::EditValue(row)));
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::SetValue(_))));
+    assert_eq!(ui.app.dialog_input, "6");
+    ui.frame();
+    let _ = ui.app.update(Message::Dialog(crate::app::DialogMsg::Input("20".into())));
+    let _ = ui.app.update(Message::Dialog(crate::app::DialogMsg::Primary));
+    wait_long(&mut ui, |a| value(a, "Locals/r").as_deref() == Some("20"));
 
     // The call stack is clickable: the frame's variables and line come up.
     let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::SelectFrame(1)));
@@ -1054,28 +1103,36 @@ fn debugging_a_program_through_the_interface() {
     // Shift+F11 leaves dobro, F11 is a step in rather than full screen.
     ui.key("f11", Modifiers::empty(), None);
     assert!(!ui.app.fullscreen, "F11 steps while debugging");
-    wait_long(&mut ui, |a| a.debug.is_stopped());
+    wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().is_some_and(|s| !s.variable_rows().is_empty()));
 
     // Hovering shows the value, from the debugger and not the language server.
     let tab = ui.app.active_tab_id().unwrap();
     ui.app.hover = None;
     let _ = ui.app.update(Message::Editor(tab, crate::ui::editor_view::EditorEvent::Hover { row: 6, vcol: 11 }));
-    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 6"));
+    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 20"));
     // Even over the right half of the letter, where the position rounds to the char after it.
     ui.app.hover = None;
     let _ = ui.app.update(Message::Editor(tab, crate::ui::editor_view::EditorEvent::Hover { row: 6, vcol: 12 }));
-    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 6"));
+    wait_long(&mut ui, |a| a.hover.as_ref().is_some_and(|h| h.text == "r = 20"));
 
     // The console evaluates.
     let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Input("2 + 3".into())));
     let _ = ui.app.update(Message::Debug(crate::app::DebugMsg::Submit));
     wait_long(&mut ui, |a| a.debug.console.iter().any(|l| l.text == "5"));
 
-    // Off to the end: the program's output and its exit code come through, and the session closes.
+    // Ctrl+F10 runs on to the line with the caret, the printf, without a breakpoint there.
+    ui.app.jump_to(13, 0);
+    ui.key("f10", Modifiers::CTRL, None);
+    wait_long(&mut ui, |a| a.debug.is_stopped() && a.debug.session.as_ref().unwrap().exec_location().is_some_and(|l| l.1 == 13) && value(a, "Locals/total").is_some());
+    assert_eq!(value(&ui.app, "Locals/total").as_deref(), Some("24"), "20 from dobro, plus 4");
+    assert_eq!(ui.app.debug.breakpoints[&src].iter().map(|b| b.line).collect::<Vec<_>>(), vec![5]);
+
+    // Off to the end: the output in the program's terminal, the exit code in the console.
     ui.key("f5", Modifiers::empty(), None);
     wait_long(&mut ui, |a| a.debug.session.is_none());
+    let shown = |a: &App| a.terms.iter().find(|t| t.id == term).map(|t| t.screen_text()).unwrap_or_default();
+    wait_long(&mut ui, |a| shown(a).contains("total 24"));
     let text: Vec<_> = ui.app.debug.console.iter().map(|l| l.text.as_str()).collect();
-    assert!(text.contains(&"total 10"), "{text:?}");
     assert!(text.iter().any(|l| l.ends_with(" 7")), "{text:?}");
     assert!(ui.app.debug.breakpoints[&src][0].line == 5, "the breakpoint stays for next time");
 
@@ -1148,6 +1205,10 @@ fn a_launch_json_pointing_at_nothing_says_so() {
     std::fs::write(&src, "int main(void) { return 0; }\n").unwrap();
     let mut ui = Ui::new(vec![dir.clone(), src]);
     ui.key("f5", Modifiers::empty(), None);
+    // The folder's own launch.json runs commands: asked about first.
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::TrustFolder(..))), "{:?}", ui.app.dialog);
+    ui.frame();
+    let _ = ui.app.update(Message::Dialog(crate::app::DialogMsg::Primary));
     assert!(ui.app.debug.session.is_none(), "it doesn't sit there looking like it's running");
     assert_eq!(ui.app.panel, Some(crate::app::PanelView::Debug));
     assert!(ui.app.debug.console.iter().any(|l| l.text.contains("nao_existe")), "{:?}", ui.app.debug.console);
@@ -1266,5 +1327,634 @@ fn menu_labels_are_really_drawn() {
     drop(bar);
     let Renderer::Secondary(sk) = &mut r else { panic!() };
     let texts: Vec<String> = sk.layers().iter().flat_map(|l| l.text.iter().map(|t| format!("{t:?}").chars().take(160).collect::<String>())).collect();
-    assert_eq!(texts.len(), 10, "{texts:?}");
+    assert_eq!(texts.len(), 11, "{texts:?}");
+}
+
+fn have(tool: &str) -> bool {
+    tinta_core::host::find(tool)
+}
+
+fn run_output(cwd: &Path, argv: &[String]) -> (String, i32) {
+    let out = std::process::Command::new(&argv[0]).args(&argv[1..]).current_dir(cwd).stdin(std::process::Stdio::null()).output().unwrap();
+    (String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr), out.status.code().unwrap_or(-1))
+}
+
+/// The programs started in terminals since the test began.
+fn term_runs() -> Vec<(u64, PathBuf, Vec<String>)> {
+    crate::ui::terminal::log::RUNS.lock().unwrap().clone()
+}
+
+/// What was sent to the terminals since the test began: pasted text, keys.
+fn term_sent() -> Vec<(u64, String)> {
+    crate::ui::terminal::log::SENT.lock().unwrap().clone()
+}
+
+fn last_run(_ui: &Ui) -> (u64, PathBuf, Vec<String>) {
+    term_runs().last().cloned().expect("a program was started in a terminal")
+}
+
+#[test]
+fn a_compiled_file_builds_first_and_its_errors_mark_the_code() {
+    if !have("cc") {
+        return;
+    }
+    let dir = temp_dir("runc");
+    let p = dir.join("ola.c");
+    std::fs::write(&p, "#include <stdio.h>\nint main(void) {\n  printf(\"ola\\n\");\n  return nada;\n}\n").unwrap();
+    let mut ui = Ui::new(vec![p.clone()]);
+    ui.app.settings.lsp_enabled = false;
+    ui.cmd(Command::RunFile);
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Tasks));
+    wait_long(&mut ui, |a| a.tasks.running.is_none() && a.tasks.exit.is_some());
+    assert!(term_runs().is_empty(), "a failed build runs nothing");
+    let (_, e) = ui.app.active().unwrap();
+    assert!(e.diags.iter().any(|d| d.message.contains("nada")), "{:?}", e.diags);
+    // Fixed, it builds and runs.
+    std::fs::write(&p, "#include <stdio.h>\nint main(void) {\n  printf(\"ola\\n\");\n  return 0;\n}\n").unwrap();
+    ui.cmd(Command::RunFile);
+    wait_long(&mut ui, |a| a.runner.term.is_some());
+    let (_, cwd, argv) = last_run(&ui);
+    let (out, code) = run_output(&cwd, &argv);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("ola"), "{out}");
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Terminal));
+}
+
+#[test]
+fn a_language_without_its_server_says_how_to_get_one() {
+    let dir = temp_dir("nolsp");
+    let lua = dir.join("a.lua");
+    std::fs::write(&lua, "print(1)\n").unwrap();
+    let mut ui = Ui::new(Vec::new());
+    // A server that can't be there, so the test doesn't depend on what this machine has.
+    ui.app.settings.lsp_servers.insert("lua".into(), tinta_core::settings::LspServer { command: "nao-existe-servidor".into(), args: Vec::new() });
+    let t = ui.app.open_path(&lua);
+    ui.run(t);
+    let (lang, text, has_command) = ui.app.lsp_hint().expect("a hint for Lua");
+    assert_eq!(lang, "lua");
+    assert!(text.contains("Lua") && text.contains("nao-existe-servidor"), "{text}");
+    assert!(!has_command, "nothing to install for a command the user picked");
+    // Closed: it stays closed for the session.
+    ui.msg(Message::LspHintDone(lang));
+    assert!(ui.app.lsp_hint().is_none());
+    // Turned off on purpose: no hint at all.
+    let py = dir.join("a.py");
+    std::fs::write(&py, "print(1)\n").unwrap();
+    ui.app.settings.lsp_servers.insert("python".into(), tinta_core::settings::LspServer { command: String::new(), args: Vec::new() });
+    let t = ui.app.open_path(&py);
+    ui.run(t);
+    assert!(ui.app.lsp_hint().is_none());
+}
+
+#[test]
+fn a_missing_program_says_what_to_install() {
+    if have("cobc") {
+        return;
+    }
+    let dir = temp_dir("runmissing");
+    let p = dir.join("hello.cob");
+    std::fs::write(&p, "       IDENTIFICATION DIVISION.\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.app.settings.lsp_enabled = false;
+    ui.cmd(Command::RunFile);
+    assert!(term_runs().is_empty());
+    let (key, text, _) = ui.app.banner_hint().expect("a banner");
+    assert!(key.starts_with("run:"), "{key}");
+    assert!(text.contains("cobc") && text.contains(".cob"), "{text}");
+    ui.msg(Message::LspHintDone(key));
+    assert!(ui.app.banner_hint().is_none_or(|(k, _, _)| !k.starts_with("run:")));
+}
+
+#[test]
+fn a_projects_run_json_needs_the_folder_trusted() {
+    let dir = temp_dir("runtrust");
+    std::fs::create_dir_all(dir.join(".tinta")).unwrap();
+    std::fs::write(dir.join(".tinta/run.json"), r#"{ ".sh": "echo do-projeto" }"#).unwrap();
+    let p = dir.join("a.sh");
+    std::fs::write(&p, "echo do-arquivo\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone(), p.clone()]);
+    ui.cmd(Command::RunFile);
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::TrustFolder(..))), "{:?}", ui.app.dialog);
+    assert!(term_runs().is_empty(), "nothing runs before the answer");
+    // Not trusted: the project's file is left out, this session.
+    ui.msg(Message::Dialog(crate::app::DialogMsg::Secondary));
+    assert!(last_run(&ui).2[4].starts_with("bash "), "{:?}", last_run(&ui).2);
+    ui.cmd(Command::RunFile);
+    assert!(ui.app.dialog.is_none(), "asked once");
+    // Trusted, it counts, and that's remembered.
+    ui.cmd(Command::TrustFolder);
+    ui.cmd(Command::RunFile);
+    assert_eq!(last_run(&ui).2[4], "echo do-projeto");
+    assert!(tinta_core::run::trust::is_trusted(&dir));
+    ui.cmd(Command::UntrustFolder);
+    ui.cmd(Command::RunFile);
+    assert!(last_run(&ui).2[4].starts_with("bash "));
+    assert!(!tinta_core::run::trust::is_trusted(&dir));
+}
+
+#[test]
+fn arguments_are_asked_for_once_and_kept_for_the_file() {
+    let dir = temp_dir("runargs");
+    let p = dir.join("args.sh");
+    std::fs::write(&p, "printf '%s|' \"$@\"\n").unwrap();
+    let mut ui = Ui::new(vec![p.clone()]);
+    ui.cmd(Command::RunWithArgs);
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::RunArgs(_))));
+    ui.msg(Message::Dialog(crate::app::DialogMsg::Input("um 'dois tres'".into())));
+    ui.msg(Message::Dialog(crate::app::DialogMsg::Primary));
+    let (_, cwd, argv) = last_run(&ui);
+    let (out, _) = run_output(&cwd, &argv);
+    assert!(out.contains("um|dois tres|"), "{out}");
+    // Ctrl+F5 uses them again, and the dialog starts with them.
+    ui.cmd(Command::RunFile);
+    assert!(last_run(&ui).2[4].ends_with("um 'dois tres'"));
+    ui.cmd(Command::RunWithArgs);
+    assert_eq!(ui.app.dialog_input, "um 'dois tres'");
+    ui.msg(Message::Dialog(crate::app::DialogMsg::Cancel));
+    assert_eq!(ui.app.build_session().run_args.get(&p).map(String::as_str), Some("um 'dois tres'"));
+}
+
+#[test]
+fn a_script_runs_in_its_own_terminal_and_stays_there_with_its_output() {
+    let dir = temp_dir("runsh");
+    let p = dir.join("oi.sh");
+    std::fs::write(&p, "echo \"oi $1\"\nexit 3\n").unwrap();
+    let mut ui = Ui::new(vec![p.clone()]);
+    ui.key("f5", Modifiers::CTRL, None);
+    let (id, cwd, argv) = last_run(&ui);
+    assert_eq!(cwd, dir);
+    assert_eq!(ui.app.runner.term, Some(id));
+    assert_eq!(ui.app.panel, Some(crate::app::PanelView::Terminal));
+    assert_eq!(ui.app.focus, Focus::Editor, "the text keeps the keyboard");
+    let t = ui.app.terms.iter().find(|t| t.id == id).unwrap();
+    assert_eq!(t.title, "▶ oi.sh");
+    assert!(argv[4].starts_with("bash ") && argv[4].ends_with("oi.sh"), "{argv:?}");
+    let (out, code) = run_output(&cwd, &argv);
+    assert_eq!(code, 3);
+    assert!(out.contains("oi \n") && out.contains(" 3 · "), "{out}");
+    // It ends, and the terminal stays with what it printed.
+    ui.msg(Message::TermExited(id, 3 << 8));
+    let t = ui.app.terms.iter().find(|t| t.id == id).expect("still there");
+    assert_eq!(t.title, "✗ oi.sh (3)");
+    assert!(!ui.app.runner.running);
+    // Running again takes its place.
+    ui.cmd(Command::RunRerun);
+    let (id2, _, _) = last_run(&ui);
+    assert_ne!(id, id2);
+    assert!(!ui.app.terms.iter().any(|t| t.id == id));
+    assert_eq!(ui.app.terms.iter().filter(|t| t.title.ends_with("oi.sh")).count(), 1);
+    // Ctrl+Alt+M stops it as Ctrl+C would.
+    ui.cmd(Command::RunStop);
+    assert_eq!(term_sent().last(), Some(&(id2, "\u{3}".to_string())));
+    // The terminal is real here: how it ended comes from the program itself.
+    wait_long(&mut ui, |a| !a.runner.running);
+    let title = ui.app.terms.iter().find(|t| t.id == id2).unwrap().title.clone();
+    assert!(title.starts_with("✗ oi.sh (") || title == "✓ oi.sh", "{title}");
+    // Closed by hand, it's forgotten.
+    let i = ui.app.terms.iter().position(|t| t.id == id2).unwrap();
+    ui.msg(Message::TermKill(i));
+    assert_eq!(ui.app.runner.term, None);
+}
+
+#[test]
+fn completion_offers_the_language_words_as_you_type() {
+    let dir = temp_dir("kw");
+    let src = dir.join("main.rs");
+    std::fs::write(&src, "fn main() {\n    \n}\n").unwrap();
+    let mut ui = Ui::new(vec![src]);
+    let labels = |ui: &Ui| -> Vec<String> {
+        let Some(c) = &ui.app.completion else { return Vec::new() };
+        c.visible.iter().map(|i| c.entries[*i].label.clone()).collect()
+    };
+    ui.app.jump_to(1, 4);
+    ui.typed("pri");
+    let shown = labels(&ui);
+    assert!(shown.contains(&"println!".to_string()) && shown.contains(&"print!".to_string()), "{shown:?}");
+    assert!(!shown.contains(&"impl".to_string()), "only words starting with what's typed: {shown:?}");
+    // Narrows as you go on, and Enter puts the word in.
+    ui.typed("ntl");
+    assert_eq!(labels(&ui).first().map(String::as_str), Some("println!"));
+    ui.key("enter", Modifiers::empty(), None);
+    assert_eq!(ui.app.active().unwrap().1.doc.line_text(1).trim_end(), "    println!");
+
+    // Not in a comment or a string, where they'd only be in the way.
+    ui.typed("(\"pri");
+    assert!(!labels(&ui).contains(&"println!".to_string()), "in a string: {:?}", labels(&ui));
+    ui.key("escape", Modifiers::empty(), None);
+    ui.key("end", Modifiers::empty(), None);
+    ui.key("enter", Modifiers::empty(), None);
+    ui.typed("// pri");
+    assert!(!labels(&ui).contains(&"println!".to_string()), "in a comment: {:?}", labels(&ui));
+    ui.key("escape", Modifiers::empty(), None);
+    ui.key("enter", Modifiers::empty(), None);
+    ui.typed("pri");
+    assert!(labels(&ui).contains(&"println!".to_string()), "back in code: {:?}", labels(&ui));
+    ui.key("escape", Modifiers::empty(), None);
+
+    // Each language its own: C has printf and its keywords, Rust's macros are not there.
+    let c = dir.join("prog.c");
+    std::fs::write(&c, "int main(void) {\n    \n}\n").unwrap();
+    let t = ui.app.open_path(&c);
+    ui.run(t);
+    ui.app.jump_to(1, 4);
+    ui.typed("pr");
+    let shown = labels(&ui);
+    assert!(shown.contains(&"printf".to_string()), "{shown:?}");
+    assert!(!shown.contains(&"println!".to_string()), "{shown:?}");
+    ui.key("escape", Modifiers::empty(), None);
+    ui.typed(" w");
+    assert!(labels(&ui).contains(&"while".to_string()), "{:?}", labels(&ui));
+}
+
+#[test]
+fn explorer_keyboard_moves_opens_and_folds() {
+    let dir = temp_dir("keys");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/inner.txt"), "dentro\n").unwrap();
+    std::fs::write(dir.join("alpha.txt"), "a\n").unwrap();
+    std::fs::write(dir.join("beta.txt"), "b\n").unwrap();
+    let mut ui = Ui::new(vec![dir.clone()]);
+    let none = Modifiers::empty();
+    let cursor = |ui: &Ui| ui.app.explorer.selected.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+    ui.cmd(Command::ShowExplorer);
+    assert_eq!(ui.app.focus, Focus::Explorer);
+    // Starts on the first row; the arrows walk the list and stop at its ends.
+    ui.key("down", none, None);
+    assert_eq!(cursor(&ui).as_deref(), Some("alpha.txt"));
+    ui.key("end", none, None);
+    ui.key("down", none, None);
+    assert_eq!(cursor(&ui).as_deref(), Some("beta.txt"));
+    ui.key("home", none, None);
+    assert_eq!(cursor(&ui).as_deref(), Some("sub"));
+    // Right opens the folder, then goes into it; left goes back out, then closes it.
+    ui.key("right", none, None);
+    assert_eq!(ui.app.explorer.rows.len(), 4);
+    ui.key("right", none, None);
+    assert_eq!(cursor(&ui).as_deref(), Some("inner.txt"));
+    ui.key("left", none, None);
+    assert_eq!(cursor(&ui).as_deref(), Some("sub"));
+    ui.key("left", none, None);
+    assert_eq!(ui.app.explorer.rows.len(), 3);
+    // A letter jumps to the next name starting with it.
+    ui.key("b", none, Some("b"));
+    assert_eq!(cursor(&ui).as_deref(), Some("beta.txt"));
+    // Space opens and stays in the tree; Enter opens and goes to the text.
+    ui.key("space", none, None);
+    assert_eq!(ui.app.active().unwrap().1.doc.file_name(), "beta.txt");
+    assert_eq!(ui.app.focus, Focus::Explorer);
+    ui.key("up", none, None);
+    ui.key("enter", none, None);
+    assert_eq!(ui.app.active().unwrap().1.doc.file_name(), "alpha.txt");
+    assert_eq!(ui.app.focus, Focus::Editor);
+    // Typing in the text doesn't move the tree.
+    ui.typed("b");
+    assert_eq!(cursor(&ui).as_deref(), Some("alpha.txt"));
+    // F2 asks for a new name, Escape leaves the tree.
+    ui.cmd(Command::ShowExplorer);
+    ui.key("f2", none, None);
+    assert!(matches!(ui.app.dialog, Some(crate::app::DialogState::RenamePath(ref p)) if p.ends_with("alpha.txt")));
+    ui.key("escape", none, None);
+    ui.cmd(Command::ShowExplorer);
+    ui.key("escape", none, None);
+    assert_eq!(ui.app.focus, Focus::Editor);
+}
+
+/// In a big file the highlighted matches follow the typing at once and are looked for again
+/// when it pauses; in a small one, straight away.
+#[test]
+fn find_matches_follow_typing_and_catch_up_after_a_pause() {
+    let dir = temp_dir("bigfind");
+    let p = dir.join("big.txt");
+    let mut src = String::new();
+    for i in 0..40_000 {
+        src.push_str(&format!("line {i} alpha beta gamma\n"));
+    }
+    assert!(src.len() > 1_000_000);
+    std::fs::write(&p, &src).unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.cmd(Command::Find);
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::Query("alpha".into())));
+    ui.frame();
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), 40_000);
+    ui.app.focus = Focus::Editor;
+    ui.app.jump_to(20_000, 0);
+    ui.frame();
+    let check = |ui: &Ui| {
+        let (_, e) = ui.app.active().unwrap();
+        for &(a, b) in &e.matches {
+            assert_eq!(e.doc.slice_string(a, b), "alpha");
+        }
+        e.matches.len()
+    };
+    // Typing before a match moves it and every one after it.
+    ui.typed("xy");
+    assert_eq!(check(&ui), 40_000);
+    // Typing into one drops it for now...
+    ui.app.jump_to(20_000, 15);
+    ui.typed("Q");
+    assert!(ui.text().lines().nth(20_000).unwrap().contains("alQpha"));
+    assert_eq!(check(&ui), 39_999);
+    // ...and a new one shows up once the typing stops.
+    ui.key("backspace", Modifiers::empty(), None);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    ui.msg(Message::TickFrame);
+    assert_eq!(check(&ui), 40_000);
+    // A small file never waits.
+    drop(ui);
+    let (mut ui, _) = Ui::with_file();
+    ui.cmd(Command::Find);
+    let _ = ui.app.update(Message::Find(crate::app::FindMsg::Query("alpha".into())));
+    ui.frame();
+    ui.app.focus = Focus::Editor;
+    ui.app.jump_to(0, 0);
+    ui.typed("alpha ");
+    assert_eq!(ui.app.active().unwrap().1.matches.len(), 3);
+}
+
+#[test]
+fn markdown_runs_as_its_preview() {
+    let dir = temp_dir("runmd");
+    let p = dir.join("leia.md");
+    std::fs::write(&p, "# Oi\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    let before = ui.app.tabs.len();
+    ui.cmd(Command::RunFile);
+    assert!(ui.app.tabs.len() > before, "the preview opened");
+    assert!(term_runs().is_empty());
+}
+
+#[test]
+fn narrow_window_floats_the_sidebar_and_puts_it_back() {
+    let dir = temp_dir("narrow");
+    std::fs::write(dir.join("one.txt"), "1\n").unwrap();
+    let mut ui = Ui::new(vec![dir]);
+    assert_eq!(ui.app.sidebar, Some(SidebarView::Explorer));
+    // Narrow: the sidebar steps aside, comes back on demand with the keyboard on the first row,
+    // and goes again once a file opens from it.
+    ui.msg(Message::Narrow(true));
+    assert_eq!(ui.app.sidebar, None);
+    ui.cmd(Command::ShowExplorer);
+    assert_eq!(ui.app.sidebar, Some(SidebarView::Explorer));
+    assert_eq!(ui.app.explorer.selected.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()), Some("one.txt"));
+    ui.key("enter", Modifiers::empty(), None);
+    assert_eq!(ui.app.active().unwrap().1.doc.file_name(), "one.txt");
+    assert_eq!(ui.app.sidebar, None);
+    // Wide again: back as it was before the window shrank.
+    ui.msg(Message::Narrow(false));
+    assert_eq!(ui.app.sidebar, Some(SidebarView::Explorer));
+}
+
+/// Commands, keys and clicks one after another in a random order, each starting from whatever
+/// the last one left: popups open, several cursors, splits, folds. Nothing may panic, and every
+/// caret stays inside its text.
+#[test]
+fn random_sessions_never_panic_or_lose_the_caret() {
+    let dir = temp_dir("random");
+    std::fs::write(dir.join("a.rs"), SOURCE).unwrap();
+    std::fs::write(dir.join("b.md"), "# t\n\ntexto [link](x)\n\n- a\n- b\n").unwrap();
+    std::fs::write(dir.join("c.py"), "def f(x):\n    return [x, {'a': (1, 2)}]\n").unwrap();
+    let skip = |c: Command| {
+        matches!(
+            c,
+            Command::Quit
+                | Command::NewTerminal
+                | Command::ToggleTerminal
+                | Command::TogglePanel
+                | Command::OpenFolderInFiles
+                | Command::CloseFolder
+        )
+    };
+    let commands: Vec<Command> = Command::ALL.iter().copied().filter(|c| !skip(*c)).collect();
+    let keys = ["left", "right", "up", "down", "home", "end", "pageup", "pagedown", "backspace", "delete", "enter", "tab", "escape"];
+    let mut ui = Ui::new(vec![dir.join("a.rs")]);
+    // TINTA_FUZZ_SEED and TINTA_FUZZ_STEPS run it longer, or another way.
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok());
+    let steps = env("TINTA_FUZZ_STEPS").unwrap_or(1500);
+    let mut seed = env("TINTA_FUZZ_SEED").map_or(0x2545_F491_4F6C_DD1D, |s| s.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut rnd = |n: usize| {
+        seed ^= seed >> 12;
+        seed ^= seed << 25;
+        seed ^= seed >> 27;
+        (seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) as usize % n.max(1)
+    };
+    let mut recent: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    for step in 0..steps {
+        let what = rnd(10);
+        let label = match what {
+            0..=2 => {
+                let c = commands[rnd(commands.len())];
+                ui.cmd(c);
+                c.id().to_string()
+            }
+            3..=5 => {
+                let text = ["a", "{", "(", "\"", "x", " ", "ção", "日", "\n"][rnd(9)];
+                ui.typed(text);
+                format!("type {text:?}")
+            }
+            6 | 7 => {
+                let k = keys[rnd(keys.len())];
+                let mods = [Modifiers::empty(), Modifiers::SHIFT, Modifiers::CTRL, Modifiers::ALT][rnd(4)];
+                ui.key(k, mods, None);
+                format!("key {k} {mods:?}")
+            }
+            8 => {
+                let p = Point::new(rnd(SIZE.width as usize) as f32, rnd(SIZE.height as usize) as f32);
+                ui.click_at(p);
+                format!("click {p:?}")
+            }
+            _ => {
+                let f = ["a.rs", "b.md", "c.py"][rnd(3)];
+                let _ = ui.app.open_path(&dir.join(f));
+                ui.frame();
+                format!("open {f}")
+            }
+        };
+        recent.push_back(label.clone());
+        if recent.len() > 12 {
+            recent.pop_front();
+        }
+        // Popups and dialogs sometimes stay open, sometimes get closed, as a person would.
+        if rnd(3) == 0 {
+            ui.app.palette = None;
+            ui.app.dialog = None;
+            ui.app.focus = Focus::Editor;
+        }
+        for t in ui.app.tabs.values() {
+            let Some(e) = ui.app.docs.get(&t.doc) else { continue };
+            let n = e.doc.len_chars();
+            for s in t.cursors.iter() {
+                assert!(s.anchor <= n && s.head <= n, "step {step}: {s:?} past {n} in {:?}, after {recent:?}", e.doc.path);
+            }
+            assert!(t.scroll_y >= 0.0 && t.scroll_x >= 0.0, "step {step} ({label})");
+        }
+    }
+}
+
+#[test]
+fn run_to_cursor_starts_a_session_and_goes_there() {
+    if !have_gdb_dap() {
+        eprintln!("skipped: no gdb with DAP");
+        return;
+    }
+    let dir = temp_dir("runto");
+    let src = dir.join("prog.c");
+    std::fs::write(&src, DEBUG_PROGRAM).unwrap();
+    let mut ui = Ui::new(vec![src.clone()]);
+    ui.frame();
+    // No breakpoints and nothing running: Ctrl+F10 on the printf starts and stops there.
+    ui.app.jump_to(13, 0);
+    ui.key("f10", Modifiers::CTRL, None);
+    let at = |a: &App| a.debug.session.as_ref().and_then(|s| s.exec_location()).map(|(_, l, _)| l);
+    wait_long(&mut ui, |a| a.debug.is_stopped() && at(a) == Some(13));
+    assert!(ui.app.debug.breakpoints.get(&src).is_none_or(|l| l.is_empty()), "no breakpoint left behind");
+    ui.cmd(Command::DebugStop);
+    wait_long(&mut ui, |a| !a.debug.is_live());
+}
+
+#[test]
+fn shift_enter_is_still_a_newline_where_there_is_no_repl() {
+    let dir = temp_dir("norepl");
+    let p = dir.join("n.md");
+    std::fs::write(&p, "um\n").unwrap();
+    let mut ui = Ui::new(vec![p]);
+    ui.app.jump_to(0, 2);
+    ui.set_mods(Modifiers::SHIFT);
+    ui.key("enter", Modifiers::SHIFT, None);
+    assert_eq!(ui.text(), "um\n\n");
+    assert!(term_runs().is_empty());
+}
+
+#[test]
+fn shift_enter_sends_the_line_to_the_repl_and_goes_on_to_the_next() {
+    if !have("python3") && !have("ipython") {
+        return;
+    }
+    let dir = temp_dir("repl");
+    let p = dir.join("r.py");
+    std::fs::write(&p, "x = 1\nfor i in range(2):\n    print(i + x)\n").unwrap();
+    let mut ui = Ui::new(vec![p.clone()]);
+    ui.app.settings.lsp_enabled = false;
+    ui.key("enter", Modifiers::SHIFT, None);
+    let (id, _, argv) = last_run(&ui);
+    assert!(argv[2].starts_with("exec ") && argv[2].contains("python"), "{argv:?}");
+    assert_eq!(term_sent(), vec![(id, "x = 1".to_string()), (id, "\r".to_string())]);
+    assert_eq!(ui.head(), (1, 0));
+    assert!(ui.app.terms.iter().any(|t| t.id == id && t.title == "REPL: Python"));
+    assert_eq!(ui.text(), "x = 1\nfor i in range(2):\n    print(i + x)\n", "nothing typed into the text");
+    // A selection goes whole, and the same REPL takes it.
+    ui.app.jump_to(1, 0);
+    {
+        let (t, e) = ui.app.active_mut().unwrap();
+        let end = e.doc.line_end(2);
+        t.cursors.set_single(tinta_core::Selection::new(e.doc.line_start(1), end));
+    }
+    crate::ui::terminal::log::SENT.lock().unwrap().clear();
+    ui.key("enter", Modifiers::SHIFT, None);
+    assert_eq!(term_runs().len(), 1, "no second REPL");
+    assert_eq!(term_sent(), vec![(id, "for i in range(2):\n    print(i + x)".to_string()), (id, "\r\r".to_string())]);
+    // The REPL ending, it's started again next time.
+    ui.msg(Message::TermExited(id, 0));
+    ui.key("enter", Modifiers::SHIFT, None);
+    assert_eq!(term_runs().len(), 2);
+}
+
+#[test]
+fn the_sidebar_lists_by_keyboard() {
+    let dir = temp_dir("lists");
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap().status.success());
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("a.rs"), "fn um() {\n    alvo();\n}\n\nfn dois() {\n    alvo();\n}\n").unwrap();
+    std::fs::write(dir.join("b.txt"), "alvo\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "x"]);
+    let mut ui = Ui::new(vec![dir.clone()]);
+    let none = Modifiers::empty();
+
+    // Search: Down from the field into the results, Enter opens the match.
+    ui.cmd(Command::ShowSearch);
+    let _ = ui.app.update(Message::Search(crate::app::SearchMsg::Query("alvo".into())));
+    wait_for(&mut ui, |a| !a.search.running && !a.search.rows.is_empty());
+    ui.msg(Message::ListFocus(SidebarView::Search));
+    assert_eq!(ui.app.focus, Focus::List);
+    assert_eq!(ui.app.list_cursor, 0, "on the first file");
+    ui.key("down", none, None);
+    ui.key("enter", none, None);
+    let (file, line) = { let (t, e) = ui.app.active().unwrap(); (e.doc.file_name(), e.doc.char_to_line(t.cursors.head())) };
+    assert_eq!((file.as_str(), line), ("a.rs", 1));
+    // Back in, Left on a result goes up to its file, Left again closes it; Up at the top is the field.
+    ui.msg(Message::ListFocus(SidebarView::Search));
+    ui.key("down", none, None);
+    ui.key("left", none, None);
+    assert_eq!(ui.app.list_cursor, 0);
+    let rows = ui.app.search.rows.len();
+    ui.key("left", none, None);
+    assert!(ui.app.search.rows.len() < rows, "the file's results closed");
+    ui.key("up", none, None);
+    assert_eq!(ui.app.focus, Focus::Input);
+
+    // Outline: on the symbol around the caret; Enter goes to the one chosen.
+    ui.app.jump_to(5, 0);
+    ui.cmd(Command::ShowOutline);
+    assert_eq!(ui.app.focus, Focus::List);
+    let names: Vec<String> = crate::app::symbols_of(ui.app.active().unwrap().1).into_iter().map(|s| s.0).collect();
+    assert_eq!(names[ui.app.list_cursor], "dois", "{names:?}");
+    ui.key("home", none, None);
+    ui.key("enter", none, None);
+    assert_eq!(ui.app.focus, Focus::Editor);
+    assert_eq!(ui.head().0, 0);
+
+    // Git: a changed file; Space stages it, and it moves to the staged ones.
+    std::fs::write(dir.join("b.txt"), "outro\n").unwrap();
+    ui.cmd(Command::GitRefresh);
+    wait_for(&mut ui, |a| a.git.entries.iter().any(|e| e.path == "b.txt"));
+    ui.cmd(Command::ShowGit);
+    assert_eq!(ui.app.focus, Focus::List);
+    assert_eq!(ui.app.git_rows()[ui.app.list_cursor].0.path, "b.txt");
+    ui.key("space", none, None);
+    wait_for(&mut ui, |a| a.git_rows().iter().any(|(e, staged)| e.path == "b.txt" && *staged));
+    ui.key("escape", none, None);
+    assert_eq!(ui.app.focus, Focus::Editor);
+}
+
+#[test]
+fn unsaved_untitled_text_comes_back_with_its_caret_where_it_was() {
+    let mut ui = Ui::new(Vec::new());
+    ui.app.settings.restore_session = true;
+    ui.cmd(Command::NewFile);
+    ui.typed("fn main(){\n");
+    ui.typed("p\n");
+    let head = ui.head();
+    ui.app.write_backups(false);
+    crate::app::save_session(&ui.app);
+    let text = ui.text();
+    let guard = ui.close();
+    let flags = Flags { targets: Vec::new(), new_session: false };
+    let (mut app, _) = App::init(Core::default(), flags);
+    // The first update used to move the caret again by the restored text's length, past its
+    // end, and the editor crashed on opening.
+    let _ = app.update(Message::TickFrame);
+    drop(guard);
+    let (t, e) = app.active().expect("the tab came back");
+    assert_eq!(e.doc.rope.to_string(), text);
+    assert_eq!(e.doc.line_col(t.cursors.head()), head);
+}
+
+#[test]
+fn untitled_text_runs_from_a_file_written_aside() {
+    let mut ui = Ui::new(vec![]);
+    ui.cmd(Command::NewFile);
+    if let Some((_, e)) = ui.app.active_mut() {
+        e.doc.language = tinta_core::language::by_name("Bourne Again Shell (bash)");
+    }
+    ui.typed("echo rascunho");
+    ui.cmd(Command::RunFile);
+    let (_, cwd, argv) = last_run(&ui);
+    let file = argv[4].strip_prefix("bash ").unwrap();
+    assert!(file.ends_with("untitled.sh"), "{file}");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "echo rascunho");
+    let (out, code) = run_output(&cwd, &argv);
+    assert_eq!(code, 0);
+    assert!(out.contains("rascunho"), "{out}");
 }

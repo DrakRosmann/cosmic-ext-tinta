@@ -31,7 +31,9 @@ fn accent() -> Color {
     cosmic::theme::active().cosmic().accent.base.into()
 }
 
-fn tree_row(app: &App, r: VarRow, remove: Option<String>) -> Element<'_, Message> {
+/// A line of the variables (`place` is `(false, i)`) or of the watches (`(true, i)`). A double
+/// click on it, or "Change Value…" on the right button, changes its value while paused.
+fn tree_row(app: &App, r: VarRow, remove: Option<String>, place: Option<(bool, usize)>, on: bool) -> Element<'_, Message> {
     let chevron: Element<'_, Message> = if r.expandable {
         icon::icon(if r.expanded { icons::chevron_down() } else { icons::chevron_right() }).size(10).into()
     } else {
@@ -53,15 +55,23 @@ fn tree_row(app: &App, r: VarRow, remove: Option<String>) -> Element<'_, Message
     }
     let long = r.value.chars().count() > 28;
     let value = r.value.clone();
-    let mut b = button::custom(container(line).clip(true)).class(crate::ui::row_button(false)).padding([2, 6]).width(Length::Fill);
+    let settable = !is_scope && app.debug.session.as_ref().is_some_and(|s| s.can_set(&r));
+    let edit = Message::Debug(DebugMsg::EditValue(r.clone()));
+    let mut b = button::custom(container(line).clip(true)).class(crate::ui::row_button(on)).padding([2, 6]).width(Length::Fill);
     if r.expandable {
         b = b.on_press(Message::Debug(DebugMsg::ToggleRow(r)));
     }
-    let main: Element<'_, Message> = if long {
+    let mut main: Element<'_, Message> = if long {
         widget::tooltip(b, text(value).size(12), widget::tooltip::Position::Bottom).into()
     } else {
         b.into()
     };
+    if settable {
+        main = widget::mouse_area(main).on_double_press(edit).into();
+        if let Some((watch, i)) = place {
+            main = super::menu::context(app, main, super::menu::var_menu(watch, i));
+        }
+    }
     match remove {
         Some(expr) => row::with_children(vec![
             container(main).width(Length::Fill).into(),
@@ -131,8 +141,9 @@ pub fn sidebar(app: &App) -> Element<'_, Message> {
     body = body.push(section("Variables"));
     match live {
         Some(s) if stopped => {
-            for r in s.variable_rows() {
-                body = body.push(tree_row(app, r, None));
+            let cursor = (app.focus == crate::app::Focus::List && app.sidebar == Some(crate::app::SidebarView::Debug)).then_some(app.list_cursor);
+            for (i, r) in s.variable_rows().into_iter().enumerate() {
+                body = body.push(tree_row(app, r, None, Some((false, i)), cursor == Some(i)));
             }
         }
         _ => body = body.push(hint("Shown when the program pauses")),
@@ -156,15 +167,15 @@ pub fn sidebar(app: &App) -> Element<'_, Message> {
     );
     match live {
         Some(s) if stopped => {
-            for (i, r) in s.watch_rows() {
+            for (k, (i, r)) in s.watch_rows().into_iter().enumerate() {
                 let expr = (r.depth == 0).then(|| s.watches[i].expression.clone());
-                body = body.push(tree_row(app, r, expr));
+                body = body.push(tree_row(app, r, expr, Some((true, k)), false));
             }
         }
         _ => {
             for w in &d.watches {
                 let r = VarRow { depth: 0, path: String::new(), name: w.clone(), value: String::new(), reference: 0, expandable: false, expanded: false, changed: false, is_scope: false };
-                body = body.push(tree_row(app, r, Some(w.clone())));
+                body = body.push(tree_row(app, r, Some(w.clone()), None, false));
             }
         }
     }

@@ -8,8 +8,10 @@ mod editing;
 mod explorer;
 mod git;
 mod keys;
+mod lists;
 mod lsp;
 mod palette;
+mod run;
 mod script;
 mod search;
 mod tasks;
@@ -20,14 +22,18 @@ pub use git::{GitMsg, GitPanel};
 pub use keys::KeyEv;
 pub use lsp::{Completion, HoverPopup, SignaturePopup};
 pub use editing::{FIND_INPUT, MAX_SHOWN_MATCHES, REPLACE_INPUT};
-pub use explorer::ExplorerMsg;
+pub use explorer::{EXPLORER_SCROLL, ExplorerMsg, ROW_H};
 pub use palette::{PAction, PItem, PaletteMode, PaletteMsg, PaletteState, PALETTE_INPUT};
 pub use debug::{DEBUG_INPUT, DebugMsg, DebugPanel, WATCH_INPUT};
+pub use run::{RunPanel, out_dir as run_out_dir};
 pub use tasks::{TaskMsg, TaskPanel};
 pub use vim::{VIM_LINE, VimMsg};
 pub use search::{SearchMsg, SearchPanel, SearchRow, SEARCH_INPUT};
+pub use lists::GIT_INPUT;
+pub use crate::ui::popups::DIALOG_INPUT;
 
 use crate::bus;
+use crate::fx;
 use crate::i18n::tr;
 use crate::state::{DocEntry, DocId, Group, Metrics, Tab, TabId};
 use crate::ui;
@@ -57,6 +63,10 @@ pub enum Focus {
     Editor,
     Terminal,
     Input,
+    /// The file tree, moved through with the arrows.
+    Explorer,
+    /// One of the sidebar's other lists: search results, git, outline or variables.
+    List,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +101,7 @@ pub struct FindState {
 
 #[derive(Debug, Clone)]
 pub enum DialogState {
+    HeaderBar,
     CloseUnsaved(TabId),
     QuitUnsaved,
     ChangedOnDisk(DocId),
@@ -100,7 +111,13 @@ pub enum DialogState {
     TrashPath(PathBuf),
     RenameSymbol,
     BreakpointCondition(PathBuf, usize),
+    /// A new value for a variable, or a watched expression, of the paused program.
+    SetValue(tinta_core::dap::VarRow),
     ConfirmDiscard(tinta_core::git::StatusEntry),
+    /// Arguments for running a file.
+    RunArgs(PathBuf),
+    /// May this folder's `.tinta/` file run commands? Then what was asked for, again.
+    TrustFolder(PathBuf, &'static str, Command),
     About,
     Shortcuts,
 }
@@ -143,6 +160,8 @@ pub enum SettingMsg {
     Whitespace(tinta_core::settings::Whitespace),
     CursorStyle(tinta_core::settings::CursorStyle),
     AutoSave(AutoSave),
+    /// The header bar's buttons, left side and right side, as command ids.
+    HeaderBar(Vec<String>, Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +190,7 @@ pub enum BoolSetting {
     RestoreSession,
     HotExit,
     ShowHidden,
+    HideBuildOutputs,
     Lsp,
     Vim,
 }
@@ -197,6 +217,13 @@ pub enum Message {
     TickSlow,
     Toast(String),
     OpenFolderPath(PathBuf),
+    /// The window became too narrow for the sidebar beside the text, or wide enough again.
+    Narrow(bool),
+    /// The keyboard goes into a sidebar list, from the field above it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ListFocus(SidebarView),
+    /// The banner about a missing language server: copy its command, if it has one, and close it.
+    LspHintDone(String),
     OpenFiles(Vec<PathBuf>),
     SaveAsTo(TabId, PathBuf),
     Pasted(Option<String>),
@@ -211,6 +238,7 @@ pub enum Message {
     Debug(DebugMsg),
     TermLink(String, usize),
     OutlineJump(usize),
+    OutlineScrolled(f32, f32),
     CompletionPick(usize),
     Lsp(core_lsp::Event),
     Dialog(DialogMsg),
@@ -220,7 +248,8 @@ pub enum Message {
     TermWake(u64),
     TermTitle(u64, Option<String>),
     TermWrite(u64, Vec<u8>),
-    TermExited(u64),
+    /// A terminal's program ended, with its wait status.
+    TermExited(u64, i32),
     TermResize(u64, u16, u16, f32, f32),
     TermFocus,
     TermSelect(usize),
@@ -252,6 +281,7 @@ pub struct App {
     pub git: GitPanel,
     pub tasks: TaskPanel,
     pub debug: DebugPanel,
+    pub runner: RunPanel,
     pub vim: tinta_core::vim::Vim,
     pub vim_line: Option<(char, String)>,
     pub vim_highlight: Option<String>,
@@ -298,6 +328,18 @@ pub struct App {
     pub font_names: Vec<String>,
     pub syntax_theme_names: Vec<String>,
     pub modifiers: keyboard::Modifiers,
+    /// The window is narrow: the sidebar floats over the text, and goes away once a file opens.
+    pub narrow: bool,
+    /// The row the keyboard is on in the sidebar list shown, with `Focus::List`.
+    pub list_cursor: usize,
+    /// Where the outline is scrolled to, and how tall it is: to keep the keyboard's row in sight.
+    pub outline_scroll: (f32, f32),
+    /// Languages whose server isn't installed, by LSP id: the language's name and how to get one.
+    pub lsp_missing: HashMap<String, (String, tinta_core::lsp::InstallHint)>,
+    /// The ones the user closed the banner for, this session.
+    pub lsp_hint_closed: std::collections::HashSet<String>,
+    /// The sidebar as it was before the window got narrow, to bring back when it widens.
+    pub(super) sidebar_wide: Option<SidebarView>,
     pub shortcuts_filter: String,
     pub title: String,
     pub session_dirty: Option<Instant>,
@@ -334,7 +376,7 @@ impl Application for App {
         }
         let dark = cosmic::theme::is_dark();
         let syntax_theme = tinta_core::syntax::theme_by_name(&settings.syntax_theme, dark);
-        let metrics = Metrics::new(&settings.font_family, settings.font_size, settings.line_height);
+        let metrics = Metrics::new(&editor_font(&settings), settings.font_size, settings.line_height);
         let mut app = App {
             core,
             base_font_size: settings.font_size,
@@ -352,6 +394,7 @@ impl Application for App {
             git: GitPanel::default(),
             tasks: TaskPanel::default(),
             debug: DebugPanel::default(),
+            runner: RunPanel::default(),
             vim: tinta_core::vim::Vim::new(),
             vim_line: None,
             vim_highlight: None,
@@ -398,6 +441,12 @@ impl Application for App {
             font_names: mono_font_names(),
             syntax_theme_names: tinta_core::syntax::theme_names(),
             modifiers: keyboard::Modifiers::default(),
+            narrow: false,
+            list_cursor: 0,
+            outline_scroll: (0.0, 0.0),
+            lsp_missing: HashMap::new(),
+            lsp_hint_closed: Default::default(),
+            sidebar_wide: None,
             shortcuts_filter: String::new(),
             title: "Tinta".into(),
             session_dirty: None,
@@ -424,7 +473,7 @@ impl Application for App {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Message>> {
-        if self.zen { Vec::new() } else { vec![ui::menu::menu_bar(self)] }
+        if self.zen { Vec::new() } else { vec![ui::menu::menu_bar(self), ui::headerbar::buttons(self, false)] }
     }
 
     fn header_center(&self) -> Vec<Element<'_, Message>> {
@@ -435,7 +484,7 @@ impl Application for App {
         if self.zen {
             return Vec::new();
         }
-        vec![ui::workspace::header_buttons(self)]
+        vec![ui::headerbar::buttons(self, true)]
     }
 
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Message>> {
@@ -523,7 +572,23 @@ fn mono_font_names() -> Vec<String> {
     names
 }
 
+/// The editor's font: the one in the settings, unless it's the default and COSMIC has its own
+/// monospace font set.
+pub fn editor_font(settings: &Settings) -> String {
+    if settings.font_family == Settings::default().font_family {
+        let m = cosmic::config::monospace_font().family;
+        if !m.is_empty() {
+            return m;
+        }
+    }
+    settings.font_family.clone()
+}
+
 impl App {
+    pub fn editor_font_family(&self) -> String {
+        editor_font(&self.settings)
+    }
+
     pub fn pt(&self) -> bool {
         crate::i18n::is_portuguese()
     }
@@ -651,6 +716,7 @@ impl App {
             }
             Message::TickFrame => {
                 self.advance_highlighting(Duration::from_millis(5));
+                self.refresh_find_matches_lazily();
                 Task::none()
             }
             Message::TickSlow => self.tick_slow(),
@@ -664,6 +730,57 @@ impl App {
                 self.toast(text)
             }
             Message::OpenFolderPath(p) => self.open_folder(p),
+            Message::LspHintDone(lang) => {
+                // "Got It": closes without copying.
+                if let Some(key) = lang.strip_prefix("\0close") {
+                    match key.strip_prefix("run:") {
+                        Some(l) => {
+                            self.runner.hint_closed.insert(l.to_string());
+                        }
+                        None => {
+                            self.lsp_hint_closed.insert(key.to_string());
+                        }
+                    }
+                    return Task::none();
+                }
+                if let Some(l) = lang.strip_prefix("run:") {
+                    let l = l.to_string();
+                    return match self.run_hint_done(&l) {
+                        Some(c) => Task::batch([fx::clipboard_write(c), self.toast(tr("Command copied: run it in a terminal"))]),
+                        None => Task::none(),
+                    };
+                }
+                let command = self.lsp_missing.get(&lang).and_then(|(_, h)| h.command.clone());
+                self.lsp_hint_closed.insert(lang);
+                if let Some(c) = command {
+                    return Task::batch([fx::clipboard_write(c), self.toast(tr("Command copied: run it in a terminal"))]);
+                }
+                Task::none()
+            }
+            Message::OutlineScrolled(y, h) => {
+                self.outline_scroll = (y, h);
+                Task::none()
+            }
+            Message::ListFocus(view) => {
+                if self.sidebar == Some(view) && self.focus_list(view) {
+                    return fx::focus_editor();
+                }
+                Task::none()
+            }
+            Message::Narrow(narrow) => {
+                if narrow != self.narrow {
+                    self.narrow = narrow;
+                    if narrow {
+                        self.sidebar_wide = self.sidebar.take();
+                    } else {
+                        let before = self.sidebar_wide.take();
+                        if self.sidebar.is_none() {
+                            self.sidebar = before;
+                        }
+                    }
+                }
+                Task::none()
+            }
             Message::OpenFiles(ps) => {
                 let mut tasks = Vec::new();
                 for p in ps {
@@ -722,7 +839,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::TermExited(id) => {
+            Message::TermExited(id, status) => {
+                // The run's terminal stays, with what the program printed.
+                if self.run_term_exited(id, status) {
+                    return Task::none();
+                }
                 if let Some(i) = self.terms.iter().position(|s| s.id == id) {
                     self.terms.remove(i);
                     self.active_term = self.active_term.min(self.terms.len().saturating_sub(1));
@@ -750,7 +871,11 @@ impl App {
             }
             Message::TermKill(i) => {
                 if i < self.terms.len() {
-                    self.terms.remove(i);
+                    let t = self.terms.remove(i);
+                    self.run_term_closed(t.id);
+                    if self.debug.tty.as_ref().is_some_and(|(id, _)| *id == t.id) {
+                        self.debug.tty = None;
+                    }
                     self.active_term = self.active_term.min(self.terms.len().saturating_sub(1));
                     if self.terms.is_empty() {
                         self.panel = None;
@@ -804,6 +929,10 @@ impl App {
             Message::Script(s) => self.on_script(s),
             Message::ThemeChanged => {
                 self.refresh_syntax_theme();
+                // COSMIC's monospace font, if the editor follows it, may have changed too.
+                if self.metrics.font != crate::state::mono_font(&self.editor_font_family()) {
+                    self.apply_font();
+                }
                 Task::none()
             }
         }
@@ -868,4 +997,15 @@ pub fn save_session(app: &App) {
     if let Err(e) = s.save() {
         log::warn!("could not save the session: {e}");
     }
+}
+
+/// What's listed in the outline: LSP's list when it's current, otherwise the tree's or the patterns'.
+pub fn symbols_of(e: &DocEntry) -> Vec<(String, String, usize, usize)> {
+    if let Some((rev, list)) = &e.lsp_symbols
+        && *rev == e.doc.revision
+        && !list.is_empty()
+    {
+        return list.iter().map(|s| (s.name.clone(), s.detail.clone(), s.line, s.depth)).collect();
+    }
+    e.symbols.iter().map(|s| (s.name.clone(), s.kind.to_string(), s.line, s.depth)).collect()
 }

@@ -106,9 +106,14 @@ pub fn from_event(ev: Event, status: event::Status, ) -> Option<Message> {
         Event::Window(window::Event::Focused) => Some(Message::WindowFocused(true)),
         Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
         Event::Window(window::Event::FileDropped(paths)) => Some(Message::Dropped(paths)),
+        // Too narrow for the sidebar beside the text, it floats over it.
+        Event::Window(window::Event::Resized(size)) => Some(Message::Narrow(size.width < NARROW_WIDTH)),
         _ => None,
     }
 }
+
+/// Below this width the sidebar floats over the text instead of beside it.
+pub const NARROW_WIDTH: f32 = 720.0;
 
 fn stroke(name: &str, mods: Modifiers) -> Stroke {
     Stroke { ctrl: mods.control(), shift: mods.shift(), alt: mods.alt(), logo: mods.logo(), key: name.to_string() }
@@ -123,7 +128,7 @@ fn terminal_passes(c: Command, s: &Stroke) -> bool {
     if !s.ctrl && !s.alt && s.key.starts_with('f') && s.key.len() > 1 {
         return matches!(c, C::CommandPalette | C::ToggleFullscreen);
     }
-    matches!(c, C::ToggleTerminal | C::TogglePanel | C::ToggleSidebar | C::QuickOpen | C::NextTab | C::PrevTab | C::CommandPalette | C::OpenSettings)
+    matches!(c, C::ToggleTerminal | C::TogglePanel | C::ToggleSidebar | C::QuickOpen | C::NextTab | C::PrevTab | C::CommandPalette | C::OpenSettings | C::RunFile | C::RunRerun | C::RunStop)
 }
 
 impl App {
@@ -137,6 +142,19 @@ impl App {
             if ev.name == "escape" && self.vim_line.take().is_some() {
                 self.focus = Focus::Editor;
                 return cosmic::widget::text_input::focus(cosmic::widget::Id::new("no-such-field"));
+            }
+            // Down from the search field, or the commit message, goes into the list under it.
+            if ev.name == "down"
+                && ev.mods.is_empty()
+                && self.focus == Focus::Input
+                && !overlay
+                && self.dialog.is_none()
+                && !self.find.open
+                && self.vim_line.is_none()
+                && let Some(view @ (super::SidebarView::Search | super::SidebarView::Git)) = self.sidebar
+                && self.focus_list(view)
+            {
+                return crate::fx::focus_editor();
             }
             if !overlay && !closes {
                 // Escape in any other field hands the keyboard back to the text.
@@ -159,6 +177,16 @@ impl App {
         // F11 steps in while debugging, as everywhere else, and is full screen the rest of the time.
         if ev.name == "f11" && ev.mods.is_empty() && self.debug.is_live() {
             return self.run(tinta_core::keymap::Command::StepInto);
+        }
+        if self.focus == Focus::Explorer
+            && let Some(t) = self.explorer_key(&ev)
+        {
+            return Task::batch([t, self.explorer_reveal_cursor()]);
+        }
+        if self.focus == Focus::List
+            && let Some(t) = self.list_key(&ev)
+        {
+            return Task::batch([t, self.list_reveal_cursor()]);
         }
         if let Some(t) = self.vim_on_key(&ev) {
             return t;
@@ -205,6 +233,10 @@ impl App {
         };
         match self.keymap.press(chosen.clone()) {
             KeyResult::Run(c) => {
+                // Shift+Enter where there's no REPL to send code to is the key it always was.
+                if c == Command::RunSelection && self.focus == Focus::Editor && !self.has_repl() {
+                    return self.editor_key(&ev);
+                }
                 if self.focus == Focus::Terminal {
                     if chosen.ctrl && chosen.shift && chosen.key == "c" {
                         return self.terminal_copy();
@@ -241,7 +273,7 @@ impl App {
                     // In Vim's other modes a key it passed on stops here, or it would get typed.
                     Focus::Editor if self.settings.vim_mode && !self.vim.is_insert() => Task::none(),
                     Focus::Editor => self.editor_key(&ev),
-                    Focus::Input => Task::none(),
+                    Focus::Input | Focus::Explorer | Focus::List => Task::none(),
                 }
             }
         }

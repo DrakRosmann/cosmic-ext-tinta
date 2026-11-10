@@ -13,23 +13,25 @@ use cosmic::widget::{self, button, column, container, icon, row, tab_bar, text};
 use cosmic::{Element, theme};
 use tinta_core::keymap::Command;
 
-pub fn header_buttons(app: &App) -> Element<'_, Message> {
-    let tip = |content: Element<'static, Message>, label: String| -> Element<'static, Message> {
-        widget::tooltip(content, text(label).size(12), widget::tooltip::Position::Bottom).into()
-    };
-    let pt = app.pt();
-    row::with_children(vec![
-        tip(button::icon(icon::Handle::from(icons::split())).on_press(Message::Cmd(Command::SplitRight)).into(), Command::SplitRight.title(pt).to_string()),
-        tip(button::icon(icon::Handle::from(icons::terminal())).on_press(Message::Cmd(Command::ToggleTerminal)).into(), Command::ToggleTerminal.title(pt).to_string()),
-        tip(button::icon(icon::Handle::from(icons::settings())).on_press(Message::Cmd(Command::OpenSettings)).into(), tr("Settings").to_string()),
-    ])
-    .spacing(2)
-    .align_y(Alignment::Center)
-    .into()
+/// The banner over the text: a program or a language server missing for the file in front, and
+/// how to get it.
+fn banner(app: &App) -> Option<Element<'_, Message>> {
+    let (key, msg, has_command) = app.banner_hint()?;
+    let mut r = row::with_capacity(3).spacing(8).padding([6, 12]).align_y(Alignment::Center);
+    r = r.push(icon::icon(icons::warning()).size(16));
+    r = r.push(text(msg).size(13).width(Length::Fill));
+    if has_command {
+        r = r.push(button::suggested(tr("Copy Command")).on_press(Message::LspHintDone(key.clone())));
+    }
+    r = r.push(button::standard(tr("Got It")).on_press(Message::LspHintDone(format!("\0close{key}"))));
+    Some(container(r).width(Length::Fill).class(theme::Container::Card).into())
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let editors = editors_area(app);
+    let mut editors = editors_area(app);
+    if let Some(b) = banner(app).filter(|_| !app.zen) {
+        editors = column::with_children(vec![b, editors]).into();
+    }
     let center: Element<'_, Message> = if app.zen {
         editors
     } else if app.panel.is_some() {
@@ -48,10 +50,19 @@ pub fn view(app: &App) -> Element<'_, Message> {
     } else {
         let mut r = row::with_capacity(4).width(Length::Fill).height(Length::Fill);
         r = r.push(activity_rail(app));
-        if app.sidebar.is_some() {
+        if app.sidebar.is_some() && !app.narrow {
             r = r.push(container(sidebar::view(app)).width(Length::Fixed(app.sidebar_w)).height(Length::Fill));
             r = r.push(sash(true, Message::SidebarResize));
         }
+        // A narrow window has no room beside the text: the sidebar floats over it, and a click
+        // beside it puts it away.
+        let center: Element<'_, Message> = if app.sidebar.is_some() && app.narrow {
+            let scrim = widget::mouse_area(widget::Space::new().width(Length::Fill).height(Length::Fill)).on_press(Message::Cmd(Command::ToggleSidebar));
+            let side = container(sidebar::view(app)).width(Length::Fixed(app.sidebar_w.min(320.0))).height(Length::Fill).class(theme::Container::Dialog(false));
+            stack(vec![center, row::with_children(vec![side.into(), scrim.into()]).into()]).into()
+        } else {
+            center
+        };
         r.push(container(center).width(Length::Fill).height(Length::Fill)).into()
     };
 
@@ -149,7 +160,8 @@ fn activity_rail(app: &App) -> Element<'_, Message> {
     let changes = app.git.entries.len();
     let git_item = item(icons::git(), SidebarView::Git, "Source Control");
     let git_el: Element<'_, Message> = if changes > 0 {
-        column::with_children(vec![git_item, container(text(changes.to_string()).size(10)).center_x(Length::Fixed(36.0)).into()]).into()
+        let n = if changes > 99 { "99+".to_string() } else { changes.to_string() };
+        column::with_children(vec![git_item, container(text(n).size(10)).center_x(Length::Fixed(36.0)).into()]).into()
     } else {
         git_item
     };
@@ -160,7 +172,15 @@ fn activity_rail(app: &App) -> Element<'_, Message> {
             git_el,
             item(icons::outline(), SidebarView::Outline, "Outline"),
             item(icons::debug(), SidebarView::Debug, "Run and Debug"),
+            widget::Space::new().height(Length::Fill).into(),
+            widget::tooltip(
+                button::custom(icon::icon(icons::settings()).size(20)).padding(8).class(theme::Button::Icon).on_press(Message::Cmd(Command::OpenSettings)),
+                text(tr("Settings")).size(12),
+                widget::tooltip::Position::Right,
+            )
+            .into(),
         ])
+        .height(Length::Fill)
         .spacing(4)
         .padding([6, 4])
         .align_x(Alignment::Center),

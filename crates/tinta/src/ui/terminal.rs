@@ -32,6 +32,16 @@ use std::time::Instant;
 pub struct Proxy {
     id: u64,
     pending: Arc<AtomicBool>,
+    /// Set once the end was reported: alacritty says it twice, with the code and without.
+    ended: Arc<AtomicBool>,
+}
+
+impl Proxy {
+    fn ended(&self, status: i32) {
+        if !self.ended.swap(true, Ordering::AcqRel) {
+            bus::send(Message::TermExited(self.id, status));
+        }
+    }
 }
 
 impl EventListener for Proxy {
@@ -47,9 +57,79 @@ impl EventListener for Proxy {
             TermEvent::ResetTitle => bus::send(Message::TermTitle(self.id, None)),
             TermEvent::PtyWrite(s) => bus::send(Message::TermWrite(self.id, s.into_bytes())),
             TermEvent::ClipboardStore(_, s) => bus::send(Message::CopyText(s)),
-            TermEvent::Exit | TermEvent::ChildExit(_) => bus::send(Message::TermExited(self.id)),
+            // As a wait status: the code in the second byte.
+            TermEvent::ChildExit(code) => self.ended((code & 0xff) << 8),
+            // Without a code it ended by a signal.
+            TermEvent::Exit => self.ended(libc::SIGKILL),
             _ => {}
         }
+    }
+}
+
+/// A pseudo-terminal opened elsewhere, with its program started elsewhere too: the debugged
+/// program's, which the debugger runs. Only its output and input go through here.
+/// alacritty reads the pty when an event comes with this key (its own constant is private).
+const PTY_READ_WRITE_TOKEN: usize = 0;
+
+struct Attached {
+    file: std::fs::File,
+}
+
+impl tty::EventedReadWrite for Attached {
+    type Reader = std::fs::File;
+    type Writer = std::fs::File;
+
+    unsafe fn register(&mut self, poll: &Arc<polling::Poller>, mut interest: polling::Event, mode: polling::PollMode) -> std::io::Result<()> {
+        interest.key = PTY_READ_WRITE_TOKEN;
+        // SAFETY: the file lives in this struct, which the event loop deregisters before dropping.
+        unsafe { poll.add_with_mode(&self.file, interest, mode) }
+    }
+
+    fn reregister(&mut self, poll: &Arc<polling::Poller>, mut interest: polling::Event, mode: polling::PollMode) -> std::io::Result<()> {
+        interest.key = PTY_READ_WRITE_TOKEN;
+        poll.modify_with_mode(&self.file, interest, mode)
+    }
+
+    fn deregister(&mut self, poll: &Arc<polling::Poller>) -> std::io::Result<()> {
+        poll.delete(&self.file)
+    }
+
+    fn reader(&mut self) -> &mut std::fs::File {
+        &mut self.file
+    }
+
+    fn writer(&mut self) -> &mut std::fs::File {
+        &mut self.file
+    }
+}
+
+impl tty::EventedPty for Attached {
+    fn next_child_event(&mut self) -> Option<tty::ChildEvent> {
+        None
+    }
+}
+
+impl alacritty_terminal::event::OnResize for Attached {
+    fn on_resize(&mut self, size: WindowSize) {
+        use std::os::fd::AsRawFd;
+        let win = libc::winsize { ws_row: size.num_lines, ws_col: size.num_cols, ws_xpixel: 0, ws_ypixel: 0 };
+        // SAFETY: an ioctl on a descriptor this struct owns, with a winsize as it expects.
+        unsafe {
+            libc::ioctl(self.file.as_raw_fd(), libc::TIOCSWINSZ, &win as *const libc::winsize);
+        }
+    }
+}
+
+/// For the tests: the programs started in terminals, and what was sent to them, in order.
+#[cfg(test)]
+pub mod log {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    pub static RUNS: Mutex<Vec<(u64, PathBuf, Vec<String>)>> = Mutex::new(Vec::new());
+    pub static SENT: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+    pub fn clear() {
+        RUNS.lock().unwrap().clear();
+        SENT.lock().unwrap().clear();
     }
 }
 
@@ -71,31 +151,95 @@ impl Drop for Session {
 
 impl Session {
     pub fn spawn(id: u64, cwd: Option<PathBuf>, shell: &str) -> Result<Self, String> {
-        let pending = Arc::new(AtomicBool::new(false));
-        let proxy = Proxy { id, pending: pending.clone() };
-        let size = TermSize::new(80, 24);
-        let window = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 18 };
-        let term = Term::new(Config::default(), &size, proxy.clone());
-        let term = Arc::new(FairMutex::new(term));
+        let shell = (!shell.is_empty()).then(|| tty::Shell::new(shell.to_string(), Vec::new()));
+        Self::start(id, cwd, shell, false)
+    }
+
+    /// A terminal running `argv` instead of the shell: a program run from the editor, a REPL.
+    /// What it printed stays once it ends.
+    pub fn run(id: u64, cwd: PathBuf, argv: Vec<String>, title: String) -> Result<Self, String> {
+        #[cfg(test)]
+        log::RUNS.lock().unwrap().push((id, cwd.clone(), argv.clone()));
+        let mut argv = argv.into_iter();
+        let program = argv.next().ok_or("empty command")?;
+        let mut s = Self::start(id, Some(cwd), Some(tty::Shell::new(program, argv.collect())), true)?;
+        s.title = title;
+        Ok(s)
+    }
+
+    fn start(id: u64, cwd: Option<PathBuf>, shell: Option<tty::Shell>, drain: bool) -> Result<Self, String> {
+        let (term, proxy, pending) = Self::make_term(id);
         tty::setup_env();
         let mut env = std::collections::HashMap::new();
         env.insert("TERM".to_string(), "xterm-256color".to_string());
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "tinta".to_string());
-        let options = tty::Options {
-            shell: (!shell.is_empty()).then(|| tty::Shell::new(shell.to_string(), Vec::new())),
-            working_directory: cwd,
-            drain_on_exit: false,
-            env,
-        };
+        let options = tty::Options { shell, working_directory: cwd, drain_on_exit: drain, env };
+        let window = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 18 };
         let pty = tty::new(&options, window, id).map_err(|e| e.to_string())?;
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false).map_err(|e| e.to_string())?;
+        let event_loop = EventLoop::new(term.clone(), proxy, pty, drain, false).map_err(|e| e.to_string())?;
         let tx = event_loop.channel();
         event_loop.spawn();
         Ok(Self { id, term, tx, title: String::new(), exited: false, pending, size: (80, 24) })
     }
 
+    /// A terminal over the master side of a pseudo-terminal whose program runs elsewhere.
+    pub fn attach(id: u64, master: std::os::fd::OwnedFd, title: String) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fcntl on a descriptor owned here.
+        unsafe {
+            let fd = master.as_raw_fd();
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        let (term, proxy, pending) = Self::make_term(id);
+        let pty = Attached { file: std::fs::File::from(master) };
+        let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false).map_err(|e| e.to_string())?;
+        let tx = event_loop.channel();
+        event_loop.spawn();
+        Ok(Self { id, term, tx, title, exited: false, pending, size: (80, 24) })
+    }
+
+    fn make_term(id: u64) -> (Arc<FairMutex<Term<Proxy>>>, Proxy, Arc<AtomicBool>) {
+        let pending = Arc::new(AtomicBool::new(false));
+        let proxy = Proxy { id, pending: pending.clone(), ended: Arc::new(AtomicBool::new(false)) };
+        let term = Term::new(Config::default(), &TermSize::new(80, 24), proxy.clone());
+        (Arc::new(FairMutex::new(term)), proxy, pending)
+    }
+
+    /// What's on the screen, a line of text per row: for the tests and the scripts.
+    pub fn screen_text(&self) -> String {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let mut out = String::new();
+        for l in 0..grid.screen_lines() as i32 {
+            let row = &grid[Line(l)];
+            let line: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Text as if pasted: inside the markers when the program asked for them.
+    pub fn paste(&self, text: &str) {
+        #[cfg(test)]
+        log::SENT.lock().unwrap().push((self.id, text.to_string()));
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        if self.is_bracketed_paste() {
+            self.send(format!("\x1b[200~{text}\x1b[201~").into_bytes());
+        } else {
+            self.send(text.into_bytes());
+        }
+    }
+
     pub fn write(&self, bytes: Vec<u8>) {
+        #[cfg(test)]
+        log::SENT.lock().unwrap().push((self.id, String::from_utf8_lossy(&bytes).into_owned()));
+        self.send(bytes);
+    }
+
+    fn send(&self, bytes: Vec<u8>) {
         let _ = self.tx.send(Msg::Input(Cow::Owned(bytes)));
         self.term.lock().scroll_display(Scroll::Bottom);
     }
